@@ -16,6 +16,7 @@
 #include <vector>
 #include "../core/boosteroid_api.hpp"
 #include "../core/http.hpp"
+#include "../core/i18n.hpp"
 #include "../core/qrcodegen.hpp"
 #include "json.hpp"
 #include "covers.hpp"
@@ -103,7 +104,7 @@ struct ServerSettings {
     std::string preferredLocationLabel{"Automatico"};
     bool xboxFaceLayout{false};
     int language{0};  // 0 = Espanol, 1 = English
-    int resolution{0};  // 0 = automatic, 1 = 720p, 2 = 1080p
+    int resolution{0};  // 0=auto, 1=720p, 2=720HQ, 3=1080p, 4=1080HQ
     std::vector<int> favoriteGameIds;
     std::vector<int> recentGameIds;
 };
@@ -129,7 +130,7 @@ ServerSettings load_server_settings() {
             "preferredLocationLabel", std::string("Automatico"));
         settings.xboxFaceLayout = value.value("xboxFaceLayout", false);
         settings.language = std::clamp(value.value("language", 0), 0, 1);
-        settings.resolution = std::clamp(value.value("resolution", 0), 0, 2);
+        settings.resolution = std::clamp(value.value("resolution", 0), 0, 4);
         settings.favoriteGameIds = value.value(
             "favoriteGameIds", std::vector<int>{});
         settings.recentGameIds = value.value(
@@ -229,6 +230,37 @@ constexpr uint64_t kVirtualMouseLongPressMs = 550;
 constexpr uint64_t kVirtualMouseHideMs = 10000;
 constexpr int kVirtualMouseMoveThreshold = 24;
 
+// Left-stick navigation for the library/settings UI. A fresh direction fires
+// immediately, then repeats after a short delay so menus feel like the D-pad.
+struct AnalogNavigation {
+    u64 directions = 0;
+    uint64_t repeatAt = 0;
+
+    u64 update(HidAnalogStickState stick) {
+        constexpr int kThreshold = 16000;
+        constexpr uint64_t kRepeatDelayMs = 350;
+        constexpr uint64_t kRepeatEveryMs = 90;
+
+        u64 next = 0;
+        if (stick.y > kThreshold) next |= HidNpadButton_Up;
+        if (stick.y < -kThreshold) next |= HidNpadButton_Down;
+        if (stick.x < -kThreshold) next |= HidNpadButton_Left;
+        if (stick.x > kThreshold) next |= HidNpadButton_Right;
+
+        const uint64_t now = SDL_GetTicks64();
+        u64 pressed = 0;
+        if (next != directions) {
+            pressed = next;
+            directions = next;
+            repeatAt = now + kRepeatDelayMs;
+        } else if (next != 0 && now >= repeatAt) {
+            pressed = next;
+            repeatAt = now + kRepeatEveryMs;
+        }
+        return pressed;
+    }
+};
+
 constexpr int kSettingsCardX = 480;
 constexpr int kSettingsCardW = 960;
 constexpr int kSettingsCardH = 170;
@@ -238,8 +270,7 @@ constexpr int kSettingsViewBottom = 890;
 constexpr int kSettingsRowCount = 6;
 
 // Touch controller for the in-stream two-dot menu. Returns true when the tap
-// belongs to the panel. A tap outside closes it and remains available to the
-// independent Guide/Home target.
+// belongs to the panel; a tap outside closes it.
 bool handle_stream_settings_touch(gnx::stream::QuickMenuState& state,
                                   int x, int y, bool& layoutChanged,
                                   bool& leaveRequested) {
@@ -392,13 +423,15 @@ int main(int argc, char* argv[]) {
 
     PadState pad;
     padInitializeDefault(&pad);
+    AnalogNavigation analogNavigation;
     hidInitializeTouchScreen();
 
     // 3. Initialize ZERODROID Boosteroid Engine
     ZERODROID::BoosteroidAPI api;
     ServerSettings serverSettings = load_server_settings();
-    auto ui = [&serverSettings](const char* spanish, const char* english) {
-        return serverSettings.language == 1 ? english : spanish;
+    gnx::i18n::set_english(serverSettings.language == 1);
+    auto ui = [](const char* spanish, const char* english) {
+        return gnx::i18n::tr(spanish, english);
     };
     gnx::stream::QuickMenuState quickMenuState;
     quickMenuState.xboxFaceLayout = serverSettings.xboxFaceLayout;
@@ -461,7 +494,6 @@ int main(int argc, char* argv[]) {
     int touchLastY = 0;
     uint64_t touchDownAt = 0;
     uint64_t lastTouchAt = SDL_GetTicks64();
-    uint64_t guideTouchUntil = 0;
     std::string launchingTitle;
     int launchingGameId = 0;
 
@@ -597,6 +629,8 @@ int main(int argc, char* argv[]) {
         padUpdate(&pad);
         u64 kDown = padGetButtonsDown(&pad);
         const u64 kHeld = padGetButtons(&pad);
+        const u64 navDown = kDown |
+            (dekoStreaming ? 0 : analogNavigation.update(padGetStickPos(&pad, 0)));
 
         if (dekoStreaming) {
             bool leaveFromMenu = false;
@@ -616,11 +650,10 @@ int main(int argc, char* argv[]) {
                     touchDownAt = SDL_GetTicks64();
                     touchMoved = false;
                     // While the quick panel is open, every touch is UI input.
-                    // The toggle and Guide button are UI even when it is closed.
+                    // The two-dot toggle is UI even when the panel is closed.
                     touchOnUi =
                         quickMenuState.open ||
-                        point_in_rect(x, y, gnx::stream::kQuickToggleRect) ||
-                        point_in_rect(x, y, gnx::stream::kGuideButtonRect);
+                        point_in_rect(x, y, gnx::stream::kQuickToggleRect);
                     if (!touchOnUi) {
                         // First touchpad contact: show the cursor at centre.
                         stream->virtual_mouse_move(0.0f, 0.0f);
@@ -664,11 +697,6 @@ int main(int argc, char* argv[]) {
                                 serverSettings.xboxFaceLayout);
                             save_server_settings(serverSettings);
                         }
-                        if (!quickTouch && point_in_rect(
-                                touchLastX, touchLastY,
-                                gnx::stream::kGuideButtonRect)) {
-                            guideTouchUntil = SDL_GetTicks64() + 160;
-                        }
                     }
                 } else if (!touchMoved && dx < kVirtualMouseMoveThreshold &&
                            dy < kVirtualMouseMoveThreshold) {
@@ -683,8 +711,6 @@ int main(int argc, char* argv[]) {
                 stream->virtual_mouse_hide();
             }
 
-            const bool guidePressed = SDL_GetTicks64() < guideTouchUntil;
-            stream->set_guide_button_pressed(guidePressed);
             const u64 exitMask =
                 HidNpadButton_L | HidNpadButton_R | HidNpadButton_Minus;
             const bool leaveStream =
@@ -701,7 +727,6 @@ int main(int argc, char* argv[]) {
                 stream->stop();
                 dekoStreaming = false;
                 touchWasDown = false;
-                guideTouchUntil = 0;
                 quickMenuState.open = false;
                 if (!gfx.resume()) break;
                 stream = std::make_unique<gnx::stream::Engine>(api, gfx.renderer());
@@ -762,11 +787,14 @@ int main(int argc, char* argv[]) {
                 AsyncServerSaveResult completed = serverSaveFuture.get();
                 if (completed.ok) {
                     save_server_settings(serverSettings);
-                    libraryNotice = "Configuracion de servidor guardada en Boosteroid.";
+                    libraryNotice = ui(
+                        "Configuracion de servidor guardada en Boosteroid.",
+                        "Server settings saved to Boosteroid.");
                     serverConfigError.clear();
                 } else {
                     serverConfigError = completed.error;
-                    libraryNotice = "No se pudo guardar: " + completed.error;
+                    libraryNotice = ui("No se pudo guardar: ",
+                                       "Could not save: ") + completed.error;
                 }
             } catch (const std::exception& error) {
                 serverConfigError = error.what();
@@ -793,7 +821,9 @@ int main(int argc, char* argv[]) {
                 stream->set_quick_menu_state(quickMenuState);
                 covers = std::make_unique<gnx::Covers>(
                     gfx, "sdmc:/switch/ZERODROID/covers");
-                libraryNotice = "No se pudo iniciar la salida de video de Switch.";
+                libraryNotice = ui(
+                    "No se pudo iniciar la salida de video de Switch.",
+                    "Could not start the Switch video output.");
                 launchPanel = false;
             } else {
                 launchPanel = false;
@@ -897,16 +927,16 @@ int main(int argc, char* argv[]) {
             launchPanel = false;
             launchingGameId = 0;
             libraryNotice = reason.empty()
-                ? "Inicio cancelado."
-                : "No se pudo iniciar: " + reason;
+                ? ui("Inicio cancelado.", "Launch canceled.")
+                : ui("No se pudo iniciar: ", "Could not start: ") + reason;
         }
 
         if (settingsOpen) {
             const std::size_t locationCount = serverLocations.size() + 1;
-            if (kDown & HidNpadButton_Up) {
+            if (navDown & HidNpadButton_Up) {
                 selectedSettingsRow = std::max(0, selectedSettingsRow - 1);
             }
-            if (kDown & HidNpadButton_Down) {
+            if (navDown & HidNpadButton_Down) {
                 selectedSettingsRow = std::min(5, selectedSettingsRow + 1);
             }
             {
@@ -925,7 +955,7 @@ int main(int argc, char* argv[]) {
                 settingsScroll = std::clamp(settingsScroll, 0, maxScroll);
             }
             if (selectedSettingsRow == 0 && serverConfigReady &&
-                (kDown & (HidNpadButton_Left | HidNpadButton_Right |
+                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
                           HidNpadButton_A))) {
                 serverSettings.allowDistantRegions =
                     !serverSettings.allowDistantRegions;
@@ -933,7 +963,7 @@ int main(int argc, char* argv[]) {
                 startServerSave();
             }
             if (selectedSettingsRow == 1 &&
-                (kDown & (HidNpadButton_Left | HidNpadButton_Right |
+                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
                           HidNpadButton_A))) {
                 serverSettings.xboxFaceLayout =
                     !serverSettings.xboxFaceLayout;
@@ -949,10 +979,10 @@ int main(int argc, char* argv[]) {
                          "Controls now use Nintendo button labels.");
             }
             if (selectedSettingsRow == 2 && locationCount > 0) {
-                if ((kDown & HidNpadButton_Left) && selectedLocation > 0) {
+                if ((navDown & HidNpadButton_Left) && selectedLocation > 0) {
                     --selectedLocation;
                 }
-                if ((kDown & HidNpadButton_Right) &&
+                if ((navDown & HidNpadButton_Right) &&
                     selectedLocation + 1 < locationCount) {
                     ++selectedLocation;
                 }
@@ -971,27 +1001,41 @@ int main(int argc, char* argv[]) {
                 startServerSave();
             }
             if (selectedSettingsRow == 3 &&
-                (kDown & (HidNpadButton_Left | HidNpadButton_Right |
+                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
                           HidNpadButton_A))) {
                 const int direction =
-                    (kDown & HidNpadButton_Left) ? -1 : 1;
+                    (navDown & HidNpadButton_Left) ? -1 : 1;
                 serverSettings.resolution =
-                    (serverSettings.resolution + direction + 3) % 3;
+                    (serverSettings.resolution + direction + 5) % 5;
                 save_server_settings(serverSettings);
-                libraryNotice =
-                    serverSettings.resolution == 1
-                        ? ui("Resolucion de streaming: 720p.",
-                             "Streaming resolution: 720p.")
-                        : serverSettings.resolution == 2
-                              ? ui("Resolucion de streaming: 1080p.",
-                                   "Streaming resolution: 1080p.")
-                              : ui("Resolucion de streaming: Auto.",
-                                   "Streaming resolution: Auto.");
+                switch (serverSettings.resolution) {
+                    case 1:
+                        libraryNotice = ui("Resolucion de streaming: 720p.",
+                                           "Streaming resolution: 720p.");
+                        break;
+                    case 2:
+                        libraryNotice = ui("Resolucion de streaming: 720HQ.",
+                                           "Streaming resolution: 720HQ.");
+                        break;
+                    case 3:
+                        libraryNotice = ui("Resolucion de streaming: 1080p.",
+                                           "Streaming resolution: 1080p.");
+                        break;
+                    case 4:
+                        libraryNotice = ui("Resolucion de streaming: 1080HQ.",
+                                           "Streaming resolution: 1080HQ.");
+                        break;
+                    default:
+                        libraryNotice = ui("Resolucion de streaming: Auto.",
+                                           "Streaming resolution: Auto.");
+                        break;
+                }
             }
             if (selectedSettingsRow == 4 &&
-                (kDown & (HidNpadButton_Left | HidNpadButton_Right |
+                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
                           HidNpadButton_A))) {
                 serverSettings.language = serverSettings.language == 0 ? 1 : 0;
+                gnx::i18n::set_english(serverSettings.language == 1);
                 save_server_settings(serverSettings);
                 libraryNotice = ui("Idioma cambiado a Espanol.",
                                    "Language changed to English.");
@@ -1047,19 +1091,19 @@ int main(int argc, char* argv[]) {
                 rebuildVisibleGames();
             }
             if (!visibleGames.empty() &&
-                (kDown & HidNpadButton_Left) && selectedGame % kColumns > 0) {
+                (navDown & HidNpadButton_Left) && selectedGame % kColumns > 0) {
                 --selectedGame;
             }
-            if (!visibleGames.empty() && (kDown & HidNpadButton_Right) &&
+            if (!visibleGames.empty() && (navDown & HidNpadButton_Right) &&
                 selectedGame + 1 < visibleGames.size() &&
                 selectedGame % kColumns + 1 < kColumns) {
                 ++selectedGame;
             }
             if (!visibleGames.empty() &&
-                (kDown & HidNpadButton_Up) && selectedGame >= kColumns) {
+                (navDown & HidNpadButton_Up) && selectedGame >= kColumns) {
                 selectedGame -= kColumns;
             }
-            if (!visibleGames.empty() && (kDown & HidNpadButton_Down) &&
+            if (!visibleGames.empty() && (navDown & HidNpadButton_Down) &&
                 selectedGame + kColumns < visibleGames.size()) {
                 selectedGame += kColumns;
             }
@@ -1238,10 +1282,15 @@ int main(int argc, char* argv[]) {
                     resolutionRow.y + 52, 260, 64};
                 gfx.fill(resolutionChip, gnx::gfx::kBar);
                 gfx.frame(resolutionChip, gnx::gfx::kFocus, 2);
-                gfx.text_centered(serverSettings.resolution == 1
-                                      ? "720p"
-                                      : serverSettings.resolution == 2
-                                            ? "1080p" : "AUTO",
+                const char* resolutionLabel = "AUTO";
+                switch (serverSettings.resolution) {
+                    case 1: resolutionLabel = "720p"; break;
+                    case 2: resolutionLabel = "720HQ"; break;
+                    case 3: resolutionLabel = "1080p"; break;
+                    case 4: resolutionLabel = "1080HQ"; break;
+                    default: break;
+                }
+                gfx.text_centered(resolutionLabel,
                                   resolutionChip.x + resolutionChip.w / 2,
                                   resolutionChip.y + 18,
                                   gnx::gfx::FontSize::Small,

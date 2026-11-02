@@ -9,5 +9,6 @@ dist/
 *.nro
 *.log
 session.json
+last_session.json
 settings.json
 .DS_Store

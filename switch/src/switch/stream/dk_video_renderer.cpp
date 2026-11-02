@@ -41,7 +41,6 @@ constexpr uint32_t kImageSlotOff = 0x500;     // per-slot image descriptor set
 constexpr uint32_t kImageSlotStride = 0x100;  // 256 bytes stride per slot (7 * 32 = 224 bytes)
 constexpr uint32_t kVtxOff = 0x800;           // quad vertex buffer
 constexpr uint32_t kHudVtxOff = 0x880;        // HUD overlay corner quad
-constexpr uint32_t kGuideVtxOff = 0x900;      // top-right Guide/Home touch button
 constexpr uint32_t kQuickVtxOff = 0x980;      // two-dot handle + quick panel
 constexpr uint32_t kCursorVtxOff = 0xA00;     // virtual mouse (one slot each)
 constexpr uint32_t kCursorVtxStride = 0x100;
@@ -72,15 +71,6 @@ constexpr Vertex kHudQuad[] = {
     {{-0.40f, +0.98f, 0.0f}, {1.0f, 0.0f}},
 };
 
-// Invisible 72x72 touch target at 1840,8; the texture itself only paints a
-// compact Xbox glyph in its centre.  The top strip clears the status clock.
-constexpr Vertex kGuideQuad[] = {
-    {{+0.9167f, +0.9852f, 0.0f}, {0.0f, 0.0f}},
-    {{+0.9167f, +0.8519f, 0.0f}, {0.0f, 1.0f}},
-    {{+0.9917f, +0.8519f, 0.0f}, {1.0f, 1.0f}},
-    {{+0.9917f, +0.9852f, 0.0f}, {1.0f, 0.0f}},
-};
-
 // Transparent 672x812 quick-menu texture in shared 1920x1080 design space.
 // It spans from the panel to the relocated two-dot handle.
 constexpr Vertex kQuickQuad[] = {
@@ -106,7 +96,7 @@ struct Transformation {
     alignas(16) float motion_data[4];  // x=blend factor, y=enabled
 };
 
-static_assert(8 * sizeof(DkImageDescriptor) <= kImageSlotStride,
+static_assert(7 * sizeof(DkImageDescriptor) <= kImageSlotStride,
               "image descriptors overlap image slot stride");
 static_assert(sizeof(Transformation) == 144, "std140 Transformation");
 static_assert(kFrameSlots == 3, "renderer slot count must match kFbNum");
@@ -330,8 +320,6 @@ bool DkVideoRenderer::init() {
     std::memcpy(static_cast<uint8_t*>(data_cpu_) + kVtxOff, kQuad, sizeof(kQuad));
     std::memcpy(static_cast<uint8_t*>(data_cpu_) + kHudVtxOff, kHudQuad,
                 sizeof(kHudQuad));
-    std::memcpy(static_cast<uint8_t*>(data_cpu_) + kGuideVtxOff, kGuideQuad,
-                sizeof(kGuideQuad));
     std::memcpy(static_cast<uint8_t*>(data_cpu_) + kQuickVtxOff, kQuickQuad,
                 sizeof(kQuickQuad));
 
@@ -381,32 +369,8 @@ bool DkVideoRenderer::init() {
         hud_desc_.initialize(hud_image_);
     }
 
-    // Always-on Guide/Home overlay texture. It is separate from the optional
-    // debug HUD so disabling diagnostics never removes the touch control.
-    guide_pixels_.assign(kGuideTexW * kGuideTexH, 0);
-    {
-        uint32_t stride = kGuideTexW * 4;
-        dk::ImageLayout guide_layout;
-        dk::ImageLayoutMaker{dev_}
-            .setFlags(DkImageFlags_UsageLoadStore | DkImageFlags_Usage2DEngine |
-                      DkImageFlags_PitchLinear)
-            .setFormat(DkImageFormat_RGBA8_Unorm)
-            .setDimensions(kGuideTexW, kGuideTexH)
-            .setPitchStride(stride)
-            .initialize(guide_layout);
-        uint32_t sz = (guide_layout.getSize() + 0xFFF) & ~0xFFFu;
-        guide_memblock_ = dk::MemBlockMaker{dev_, sz}
-                              .setFlags(DkMemBlockFlags_CpuUncached |
-                                        DkMemBlockFlags_GpuCached |
-                                        DkMemBlockFlags_Image)
-                              .create();
-        guide_cpu_ = guide_memblock_.getCpuAddr();
-        guide_image_.initialize(guide_layout, guide_memblock_, 0);
-        guide_desc_.initialize(guide_image_);
-    }
-
     // Virtual mouse cursor texture. It is small and alpha-blended like the
-    // Guide/quick overlays; only its vertex quad changes with the touchpad.
+    // quick-menu overlay; only its vertex quad changes with the touchpad.
     cursor_pixels_.assign(kCursorTexW * kCursorTexH, 0);
     {
         uint32_t stride = kCursorTexW * 4;
@@ -463,7 +427,6 @@ bool DkVideoRenderer::init() {
         }
         if (!hud_font_) logf("deko3d: HUD font unavailable (panel only)");
     }
-    rasterize_guide();
     rasterize_quick_menu();
     rasterize_cursor();
 
@@ -496,9 +459,6 @@ void DkVideoRenderer::shutdown() {
     fb_memblock_ = nullptr;
     hud_memblock_ = nullptr;
     hud_cpu_ = nullptr;
-    guide_memblock_ = nullptr;
-    guide_cpu_ = nullptr;
-    guide_pixels_.clear();
     quick_memblock_ = nullptr;
     quick_cpu_ = nullptr;
     quick_pixels_.clear();
@@ -763,48 +723,6 @@ void DkVideoRenderer::blit_quick_text(const char* s, int x, int y) {
     }
     SDL_UnlockSurface(surf);
     SDL_FreeSurface(surf);
-}
-
-void DkVideoRenderer::rasterize_guide() {
-    auto rgba = [](uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-        return static_cast<uint32_t>(r) | (static_cast<uint32_t>(g) << 8) |
-               (static_cast<uint32_t>(b) << 16) |
-               (static_cast<uint32_t>(a) << 24);
-    };
-    const uint32_t shadow = rgba(0, 0, 0, guide_pressed_ ? 180 : 125);
-    const uint32_t icon = guide_pressed_ ? rgba(245, 243, 255, 255)
-                                          : rgba(167, 139, 250, 255);
-    const uint32_t mark = guide_pressed_ ? rgba(109, 78, 180, 255)
-                                         : rgba(245, 243, 255, 255);
-    std::fill(guide_pixels_.begin(), guide_pixels_.end(), 0);
-
-    // Symbol only: a soft circular shadow replaces the old green square tile.
-    constexpr int cx = 48, cy = 48, shadow_radius = 26, radius = 22;
-    for (int y = cy - shadow_radius; y <= cy + shadow_radius; ++y) {
-        for (int x = cx - shadow_radius; x <= cx + shadow_radius; ++x) {
-            int dx = x - cx, dy = y - cy;
-            if (dx * dx + dy * dy <= shadow_radius * shadow_radius)
-                guide_pixels_[y * kGuideTexW + x] = shadow;
-        }
-    }
-    for (int y = cy - radius; y <= cy + radius; ++y) {
-        for (int x = cx - radius; x <= cx + radius; ++x) {
-            int dx = x - cx, dy = y - cy;
-            if (dx * dx + dy * dy <= radius * radius)
-                guide_pixels_[y * kGuideTexW + x] = icon;
-        }
-    }
-    // A high-contrast X inside the circular Xbox badge.
-    for (int y = cy - 12; y <= cy + 12; ++y) {
-        for (int x = cx - 12; x <= cx + 12; ++x) {
-            int dx = x - cx, dy = y - cy;
-            if (std::abs(std::abs(dx) - std::abs(dy)) <= 2)
-                guide_pixels_[y * kGuideTexW + x] = mark;
-        }
-    }
-    if (guide_cpu_)
-        std::memcpy(guide_cpu_, guide_pixels_.data(), guide_pixels_.size() * 4);
-    guide_rasterized_pressed_ = guide_pressed_;
 }
 
 void DkVideoRenderer::rasterize_cursor() {
@@ -1212,7 +1130,6 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
         if (motion_fm) ++generated_frames_;
         update_hud(frame);
     }
-    if (guide_pressed_ != guide_rasterized_pressed_) rasterize_guide();
     if (quick_dirty_) rasterize_quick_menu();
 
     int slot = queue_.acquireImage(swapchain_);
@@ -1272,22 +1189,19 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     // Image descriptor #2 = the HUD text texture (sampled by the overlay pass).
     cmdbuf_.pushData(data_gpu_ + image_off + 2 * sizeof(DkImageDescriptor),
                      &hud_desc_, sizeof(DkImageDescriptor));
-    // Image descriptor #3 = the always-on Xbox Guide/Home touch overlay.
+    // Image descriptor #3 = two-dot quick menu handle + optional panel.
     cmdbuf_.pushData(data_gpu_ + image_off + 3 * sizeof(DkImageDescriptor),
-                     &guide_desc_, sizeof(DkImageDescriptor));
-    // Image descriptor #4 = two-dot quick menu handle + optional panel.
-    cmdbuf_.pushData(data_gpu_ + image_off + 4 * sizeof(DkImageDescriptor),
                      &quick_desc_, sizeof(DkImageDescriptor));
-    // Image descriptor #7 = optional virtual mouse cursor.
-    cmdbuf_.pushData(data_gpu_ + image_off + 7 * sizeof(DkImageDescriptor),
+    // Image descriptor #6 = optional virtual mouse cursor.
+    cmdbuf_.pushData(data_gpu_ + image_off + 6 * sizeof(DkImageDescriptor),
                      &cursor_desc_, sizeof(DkImageDescriptor));
-    // Image descriptors #5/#6 = the next decoded frame used by Motion. When
+    // Image descriptors #4/#5 = the next decoded frame used by Motion. When
     // Motion is inactive they alias the current frame, keeping all samplers
     // valid without requiring a separate shader variant.
     FrameMapping* next = motion_fm ? motion_fm : fm;
-    cmdbuf_.pushData(data_gpu_ + image_off + 5 * sizeof(DkImageDescriptor),
+    cmdbuf_.pushData(data_gpu_ + image_off + 4 * sizeof(DkImageDescriptor),
                      &next->luma_desc, sizeof(DkImageDescriptor));
-    cmdbuf_.pushData(data_gpu_ + image_off + 6 * sizeof(DkImageDescriptor),
+    cmdbuf_.pushData(data_gpu_ + image_off + 5 * sizeof(DkImageDescriptor),
                      &next->chroma_desc, sizeof(DkImageDescriptor));
 
     dk::ImageView view{framebuffers_[slot]};
@@ -1313,13 +1227,13 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     cmdbuf_.bindDepthStencilState(depth_stencil);
 
     cmdbuf_.bindSamplerDescriptorSet(data_gpu_ + kSamplerOff, 1);
-    cmdbuf_.bindImageDescriptorSet(data_gpu_ + image_off, 8);
+    cmdbuf_.bindImageDescriptorSet(data_gpu_ + image_off, 7);
     cmdbuf_.barrier(DkBarrier_None,
                     DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
     cmdbuf_.bindTextures(DkStage_Fragment, 0,
                          {dkMakeTextureHandle(0, 0), dkMakeTextureHandle(1, 0),
-                          dkMakeTextureHandle(5, 0), dkMakeTextureHandle(6, 0)});
+                          dkMakeTextureHandle(4, 0), dkMakeTextureHandle(5, 0)});
     cmdbuf_.bindUniformBuffer(DkStage_Fragment, 0, data_gpu_ + uniform_off, 256);
 
     cmdbuf_.bindVtxAttribState(
@@ -1332,8 +1246,7 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
 
     cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
 
-    // --- Alpha-blended overlays. The debug HUD is optional; the top-right
-    // Xbox Guide/Home touch control is always drawn during native streaming.
+    // --- Alpha-blended overlays: optional debug HUD, quick menu, cursor.
     dk::BlendState overlay_blend;
     overlay_blend.setColorBlendOp(DkBlendOp_Add);
     overlay_blend.setSrcColorBlendFactor(DkBlendFactor_SrcAlpha);
@@ -1352,15 +1265,12 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
         cmdbuf_.bindVtxBuffer(0, data_gpu_ + kHudVtxOff, sizeof(kHudQuad));
         cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
     }
-    cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(4, 0)});
-    cmdbuf_.bindVtxBuffer(0, data_gpu_ + kQuickVtxOff, sizeof(kQuickQuad));
-    cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
     cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(3, 0)});
-    cmdbuf_.bindVtxBuffer(0, data_gpu_ + kGuideVtxOff, sizeof(kGuideQuad));
+    cmdbuf_.bindVtxBuffer(0, data_gpu_ + kQuickVtxOff, sizeof(kQuickQuad));
     cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
 
     if (cursor_visible_) {
-        cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(7, 0)});
+        cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(6, 0)});
         cmdbuf_.bindVtxBuffer(0, data_gpu_ + cursor_vtx_off,
                               sizeof(Vertex) * 4);
         cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);

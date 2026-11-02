@@ -63,14 +63,10 @@ public:
     void virtual_mouse_click(int button);
     void virtual_mouse_hide();
     void set_xbox_face_layout(bool enabled) { xboxFaceLayout_ = enabled; }
-    void set_guide_button_pressed(bool pressed) {
-        guidePressed_ = pressed;
-        dkVideo_.set_guide_pressed(pressed);
-    }
     void set_quick_menu_state(const QuickMenuState& state) {
         dkVideo_.set_quick_menu_state(state);
     }
-    // 0 = automatic (current Switch output), 1 = 720p, 2 = 1080p.
+    // 0 = auto, 1 = 720p, 2 = 720HQ, 3 = 1080p, 4 = 1080HQ.
     void set_stream_resolution(int mode);
     int ping_ms() const { return pingMs_.load(); }
 
@@ -122,7 +118,6 @@ private:
     void handle_control_message(const std::string& raw);
     void send_control_json(const std::string& payload);
     void send_input_json(nlohmann::json payload);
-    void send_guide_shortcut(bool pressed);
     void set_status(const std::string& value);
     void fail(const std::string& value);
     void request_keyframe_locked();
@@ -155,7 +150,6 @@ private:
     std::atomic<int> controllerId_{-1};
     std::atomic<uint32_t> inputCommand_{0};
     std::atomic<bool> xboxFaceLayout_{false};
-    std::atomic<bool> guidePressed_{false};
     std::atomic<int> pingMs_{-1};
     std::atomic<uint64_t> lastKeyframeRequestMs_{0};
     int streamResolution_{0};
@@ -211,7 +205,6 @@ private:
     std::mutex inputMutex_;
     bool padInitialized_{false};
     bool inputLogged_{false};
-    bool previousGuide_{false};
     HidAnalogStickState previousLeft_{};
     HidAnalogStickState previousRight_{};
     u64 previousButtons_{0};

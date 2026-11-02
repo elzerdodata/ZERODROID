@@ -1,5 +1,6 @@
 #include "boosteroid_api.hpp"
 #include "http.hpp"
+#include "i18n.hpp"
 #include "json.hpp"
 
 #if defined(__SWITCH__)
@@ -57,6 +58,12 @@ std::string make_uuid_v4() {
         bytes[8], bytes[9], bytes[10], bytes[11],
         bytes[12], bytes[13], bytes[14], bytes[15]);
     return output;
+}
+
+int64_t now_seconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
 
 int hex_digit(char value) {
@@ -354,7 +361,7 @@ bool parse_games(
         if (game.title.empty()) {
             game.title = first_string(raw, {"name", "title", "displayName"});
         }
-        if (game.title.empty()) game.title = "Aplicacion " + std::to_string(id);
+        if (game.title.empty()) game.title = gnx::i18n::tr("Aplicacion ", "App ") + std::to_string(id);
 
         game.posterUrl = absolute_image_url(
             baseUrl,
@@ -601,7 +608,7 @@ bool collect_realtime_queue_event(
         if (action == "state") {
             const int position = first_positive_int(body, {"position"});
             const int eta = first_positive_int(body, {"eta"});
-            status = "Esperando maquina";
+            status = gnx::i18n::tr("Esperando maquina", "Waiting for a machine");
             if (position > 0) status += " - posicion " + std::to_string(position);
             if (eta > 0) status += " (aprox. " + std::to_string(eta) + " s)";
             handled = true;
@@ -609,14 +616,18 @@ bool collect_realtime_queue_event(
         }
         if (action == "start") {
             collect_stream_signals(body, tokens, queries, sessionIds);
-            status = "Maquina asignada; iniciando sesion...";
+            status = gnx::i18n::tr("Maquina asignada; iniciando sesion...", "Machine assigned; signing in...");
             handled = true;
             return;
         }
         if (action == "unavailable" || action == "removed" ||
             action == "canceled") {
             failure = first_string(body, {"reason", "message", "error"});
-            if (failure.empty()) failure = "Boosteroid retiro la solicitud de la cola.";
+            if (failure.empty()) {
+                failure = gnx::i18n::tr(
+                    "Boosteroid retiro la solicitud de la cola.",
+                    "Boosteroid removed the queue request.");
+            }
             handled = true;
         }
     });
@@ -711,10 +722,13 @@ BoosteroidAPI::BoosteroidAPI(const std::string& baseUrl)
     while (!m_baseUrl.empty() && m_baseUrl.back() == '/') m_baseUrl.pop_back();
 #if defined(__SWITCH__)
     m_sessionFilePath = "sdmc:/switch/ZERODROID/session.json";
+    m_lastSessionFilePath = "sdmc:/switch/ZERODROID/last_session.json";
 #else
     m_sessionFilePath = "session.json";
+    m_lastSessionFilePath = "last_session.json";
 #endif
     loadSessionFromSD();
+    loadLastSessionFromSD();
 }
 
 BoosteroidAPI::~BoosteroidAPI() {}
@@ -747,13 +761,13 @@ bool BoosteroidAPI::loadSessionFromSD() {
 bool BoosteroidAPI::saveSessionToSD() {
 #if defined(__SWITCH__)
     if (mkdir("sdmc:/switch/ZERODROID", 0777) != 0 && errno != EEXIST) {
-        m_lastError = "No se pudo crear la carpeta de sesion en la SD.";
+        m_lastError = gnx::i18n::tr("No se pudo crear la carpeta de sesion en la SD.", "Could not create the session folder on the SD card.");
         return false;
     }
 #endif
     std::ofstream file(m_sessionFilePath);
     if (!file.is_open()) {
-        m_lastError = "No se pudo guardar la sesion en la SD.";
+        m_lastError = gnx::i18n::tr("No se pudo guardar la sesion en la SD.", "Could not save the session to the SD card.");
         return false;
     }
 
@@ -768,12 +782,40 @@ bool BoosteroidAPI::saveSessionToSD() {
     return file.good();
 }
 
+void BoosteroidAPI::loadLastSessionFromSD() {
+    m_lastSession = {};
+    std::ifstream file(m_lastSessionFilePath);
+    if (!file.is_open()) return;
+    std::ostringstream content;
+    content << file.rdbuf();
+    const auto stored = nlohmann::json::parse(content.str(), nullptr, false);
+    if (stored.is_discarded() || !stored.is_object()) return;
+    m_lastSession.sessionId = json_string(stored, "sessionId");
+    m_lastSession.appId = stored.value("appId", 0);
+    m_lastSession.usedAt = stored.value("usedAt", static_cast<int64_t>(0));
+}
+
+bool BoosteroidAPI::saveLastSessionToSD() {
+#if defined(__SWITCH__)
+    mkdir("sdmc:/switch", 0777);
+    mkdir("sdmc:/switch/ZERODROID", 0777);
+#endif
+    std::ofstream file(m_lastSessionFilePath);
+    if (!file.is_open()) return false;
+    file << nlohmann::json({
+        {"sessionId", m_lastSession.sessionId},
+        {"appId", m_lastSession.appId},
+        {"usedAt", m_lastSession.usedAt},
+    }).dump(2);
+    return file.good();
+}
+
 bool BoosteroidAPI::requestDeviceCode(DeviceCodeAuthArtifact& outArtifact) {
     m_lastError.clear();
     outArtifact.userCode.clear();
     outArtifact.deviceCode = make_uuid_v4();
     if (outArtifact.deviceCode.empty()) {
-        m_lastError = "No se pudo generar el codigo QR.";
+        m_lastError = gnx::i18n::tr("No se pudo generar el codigo QR.", "Could not generate the QR code.");
         return false;
     }
     outArtifact.verificationUrl =
@@ -789,7 +831,7 @@ DeviceCodePollResult BoosteroidAPI::pollDeviceCodeStatus(
     std::string& outAuthToken) {
     outAuthToken.clear();
     if (deviceCode.empty()) {
-        m_lastError = "El codigo QR no es valido.";
+        m_lastError = gnx::i18n::tr("El codigo QR no es valido.", "The QR code is not valid.");
         return DeviceCodePollResult::Error;
     }
 
@@ -811,27 +853,27 @@ DeviceCodePollResult BoosteroidAPI::pollDeviceCodeStatus(
             return DeviceCodePollResult::Pending;
         }
         if (response.status == 422) {
-            m_lastError = "El codigo QR vencio o ya no es valido.";
+            m_lastError = gnx::i18n::tr("El codigo QR vencio o ya no es valido.", "The QR code expired or is no longer valid.");
             return DeviceCodePollResult::Expired;
         }
         if (response.status != 200) {
             m_lastError = upstream_error_message(response.body);
             if (m_lastError.empty()) {
-                m_lastError = "Boosteroid respondio HTTP " + std::to_string(response.status) + ".";
+                m_lastError = gnx::i18n::tr("Boosteroid respondio HTTP ", "Boosteroid responded HTTP ") + std::to_string(response.status) + ".";
             }
             return DeviceCodePollResult::Error;
         }
 
         const auto parsed = nlohmann::json::parse(response.body, nullptr, false);
         if (parsed.is_discarded()) {
-            m_lastError = "Boosteroid devolvio una respuesta de login no valida.";
+            m_lastError = gnx::i18n::tr("Boosteroid devolvio una respuesta de login no valida.", "Boosteroid returned an invalid login response.");
             return DeviceCodePollResult::Error;
         }
         const nlohmann::json& payload = *unwrap_payload(parsed);
         const std::string accessToken = json_string(payload, "access_token");
         const std::string refreshToken = json_string(payload, "refresh_token");
         if (accessToken.empty() || refreshToken.empty()) {
-            m_lastError = "El QR fue aceptado, pero faltan los tokens de sesion.";
+            m_lastError = gnx::i18n::tr("El QR fue aceptado, pero faltan los tokens de sesion.", "The QR code was accepted, but the session tokens are missing.");
             return DeviceCodePollResult::Error;
         }
 
@@ -846,7 +888,7 @@ DeviceCodePollResult BoosteroidAPI::pollDeviceCodeStatus(
         m_lastError = error.what();
         return DeviceCodePollResult::Error;
     } catch (...) {
-        m_lastError = "Fallo desconocido al consultar el inicio de sesion.";
+        m_lastError = gnx::i18n::tr("Fallo desconocido al consultar el inicio de sesion.", "Unknown failure while checking sign-in.");
         return DeviceCodePollResult::Error;
     }
 }
@@ -868,12 +910,14 @@ void BoosteroidAPI::logout() {
     m_lastError.clear();
     m_currentUser = BoosteroidUser();
     remove(m_sessionFilePath.c_str());
+    m_lastSession = {};
+    remove(m_lastSessionFilePath.c_str());
 }
 
 bool BoosteroidAPI::getUserProfile(BoosteroidUser& outUser) {
     m_lastError.clear();
     if (!isAuthenticated()) {
-        m_lastError = "No hay una sesion de Boosteroid activa.";
+        m_lastError = gnx::i18n::tr("No hay una sesion de Boosteroid activa.", "There is no active Boosteroid session.");
         return false;
     }
 
@@ -885,7 +929,7 @@ bool BoosteroidAPI::getUserProfile(BoosteroidUser& outUser) {
         if (response.status != 200) {
             m_lastError = upstream_error_message(response.body);
             if (m_lastError.empty()) {
-                m_lastError = "El perfil respondio HTTP " +
+                m_lastError = gnx::i18n::tr("El perfil respondio HTTP ", "The profile responded HTTP ") +
                               std::to_string(response.status) + ".";
             }
             return false;
@@ -893,7 +937,7 @@ bool BoosteroidAPI::getUserProfile(BoosteroidUser& outUser) {
 
         const auto parsed = nlohmann::json::parse(response.body, nullptr, false);
         if (parsed.is_discarded()) {
-            m_lastError = "Boosteroid devolvio un perfil no valido.";
+            m_lastError = gnx::i18n::tr("Boosteroid devolvio un perfil no valido.", "Boosteroid returned an invalid profile.");
             return false;
         }
         const nlohmann::json& user = *unwrap_payload(parsed);
@@ -910,7 +954,7 @@ bool BoosteroidAPI::getUserProfile(BoosteroidUser& outUser) {
         m_lastError = error.what();
         return false;
     } catch (...) {
-        m_lastError = "Fallo desconocido al cargar el perfil.";
+        m_lastError = gnx::i18n::tr("Fallo desconocido al cargar el perfil.", "Unknown failure while loading the profile.");
         return false;
     }
 }
@@ -919,7 +963,7 @@ bool BoosteroidAPI::getInstalledGames(std::vector<GameItem>& outGames) {
     outGames.clear();
     m_lastError.clear();
     if (!isAuthenticated()) {
-        m_lastError = "No hay una sesion de Boosteroid activa.";
+        m_lastError = gnx::i18n::tr("No hay una sesion de Boosteroid activa.", "There is no active Boosteroid session.");
         return false;
     }
 
@@ -936,7 +980,7 @@ bool BoosteroidAPI::getInstalledGames(std::vector<GameItem>& outGames) {
         if (response.status != 200) {
             m_lastError = upstream_error_message(response.body);
             if (m_lastError.empty()) {
-                m_lastError = "La biblioteca respondio HTTP " +
+                m_lastError = gnx::i18n::tr("La biblioteca respondio HTTP ", "The library responded HTTP ") +
                               std::to_string(response.status) + ".";
             }
             return false;
@@ -944,11 +988,11 @@ bool BoosteroidAPI::getInstalledGames(std::vector<GameItem>& outGames) {
 
         const auto parsed = nlohmann::json::parse(response.body, nullptr, false);
         if (parsed.is_discarded()) {
-            m_lastError = "Boosteroid devolvio una biblioteca no valida.";
+            m_lastError = gnx::i18n::tr("Boosteroid devolvio una biblioteca no valida.", "Boosteroid returned an invalid library.");
             return false;
         }
         if (!parse_games(parsed, m_baseUrl, outGames)) {
-            m_lastError = "No se reconocio el formato de la biblioteca de Boosteroid.";
+            m_lastError = gnx::i18n::tr("No se reconocio el formato de la biblioteca de Boosteroid.", "The Boosteroid library format was not recognized.");
             return false;
         }
         std::fprintf(stderr, "Library parsed: %zu games\n", outGames.size());
@@ -958,7 +1002,7 @@ bool BoosteroidAPI::getInstalledGames(std::vector<GameItem>& outGames) {
         m_lastError = error.what();
         return false;
     } catch (...) {
-        m_lastError = "Fallo desconocido al cargar la biblioteca.";
+        m_lastError = gnx::i18n::tr("Fallo desconocido al cargar la biblioteca.", "Unknown failure while loading the library.");
         return false;
     }
 }
@@ -979,7 +1023,7 @@ bool BoosteroidAPI::getStreamingGateways(
     outGateways.clear();
     m_lastError.clear();
     if (!isAuthenticated()) {
-        m_lastError = "No hay una sesion de Boosteroid activa.";
+        m_lastError = gnx::i18n::tr("No hay una sesion de Boosteroid activa.", "There is no active Boosteroid session.");
         return false;
     }
 
@@ -991,19 +1035,19 @@ bool BoosteroidAPI::getStreamingGateways(
         if (!is_success(response)) {
             m_lastError = upstream_error_message(response.body);
             if (m_lastError.empty()) {
-                m_lastError = "La lista de servidores respondio HTTP " +
+                m_lastError = gnx::i18n::tr("La lista de servidores respondio HTTP ", "The server list responded HTTP ") +
                               std::to_string(response.status) + ".";
             }
             return false;
         }
         const auto parsed = parse_json_response(response);
         if (parsed.is_discarded()) {
-            m_lastError = "Boosteroid devolvio una lista de servidores no valida.";
+            m_lastError = gnx::i18n::tr("Boosteroid devolvio una lista de servidores no valida.", "Boosteroid returned an invalid server list.");
             return false;
         }
         collect_gateways(parsed, outGateways);
         if (outGateways.empty()) {
-            m_lastError = "Boosteroid no devolvio gateways disponibles.";
+            m_lastError = gnx::i18n::tr("Boosteroid no devolvio gateways disponibles.", "Boosteroid returned no available gateways.");
             return false;
         }
         return true;
@@ -1020,7 +1064,7 @@ bool BoosteroidAPI::getServerConfiguration(
     outPreferences = ServerPreferences();
     m_lastError.clear();
     if (!isAuthenticated()) {
-        m_lastError = "No hay una sesion de Boosteroid activa.";
+        m_lastError = gnx::i18n::tr("No hay una sesion de Boosteroid activa.", "There is no active Boosteroid session.");
         return false;
     }
 
@@ -1030,7 +1074,7 @@ bool BoosteroidAPI::getServerConfiguration(
             false, m_authToken, m_userDataToken, m_deviceId);
         const auto userResponse = http.get(m_baseUrl + "/api/v1/user", headers);
         if (!is_success(userResponse)) {
-            m_lastError = "No se pudieron leer las preferencias de la cuenta (HTTP " +
+            m_lastError = gnx::i18n::tr("No se pudieron leer las preferencias de la cuenta (HTTP ", "Could not read account preferences (HTTP ") +
                           std::to_string(userResponse.status) + ").";
             return false;
         }
@@ -1042,13 +1086,13 @@ bool BoosteroidAPI::getServerConfiguration(
         const auto locationsResponse = http.get(
             m_baseUrl + "/api/v1/streaming/playgrounds", headers);
         if (!is_success(locationsResponse)) {
-            m_lastError = "No se pudieron cargar las ubicaciones (HTTP " +
+            m_lastError = gnx::i18n::tr("No se pudieron cargar las ubicaciones (HTTP ", "Could not load locations (HTTP ") +
                           std::to_string(locationsResponse.status) + ").";
             return false;
         }
         const auto locationsJson = parse_json_response(locationsResponse);
         if (locationsJson.is_discarded()) {
-            m_lastError = "Boosteroid devolvio ubicaciones no validas.";
+            m_lastError = gnx::i18n::tr("Boosteroid devolvio ubicaciones no validas.", "Boosteroid returned invalid locations.");
             return false;
         }
         collect_server_locations(locationsJson, outLocations);
@@ -1061,7 +1105,7 @@ bool BoosteroidAPI::getServerConfiguration(
             return left.title < right.title;
         });
         if (outLocations.empty()) {
-            m_lastError = "Boosteroid no devolvio ubicaciones de servidor disponibles.";
+            m_lastError = gnx::i18n::tr("Boosteroid no devolvio ubicaciones de servidor disponibles.", "Boosteroid returned no available server locations.");
             return false;
         }
         m_lastError.clear();
@@ -1076,7 +1120,7 @@ bool BoosteroidAPI::updateServerConfiguration(
     const ServerPreferences& preferences) {
     m_lastError.clear();
     if (!isAuthenticated()) {
-        m_lastError = "No hay una sesion de Boosteroid activa.";
+        m_lastError = gnx::i18n::tr("No hay una sesion de Boosteroid activa.", "There is no active Boosteroid session.");
         return false;
     }
 
@@ -1092,7 +1136,7 @@ bool BoosteroidAPI::updateServerConfiguration(
         if (!is_success(distantResponse)) {
             m_lastError = upstream_error_message(distantResponse.body);
             if (m_lastError.empty()) {
-                m_lastError = "No se pudo guardar regiones lejanas (HTTP " +
+                m_lastError = gnx::i18n::tr("No se pudo guardar regiones lejanas (HTTP ", "Could not save distant regions (HTTP ") +
                               std::to_string(distantResponse.status) + ").";
             }
             return false;
@@ -1109,7 +1153,7 @@ bool BoosteroidAPI::updateServerConfiguration(
         if (!is_success(preferredResponse)) {
             m_lastError = upstream_error_message(preferredResponse.body);
             if (m_lastError.empty()) {
-                m_lastError = "No se pudo guardar la ubicacion (HTTP " +
+                m_lastError = gnx::i18n::tr("No se pudo guardar la ubicacion (HTTP ", "Could not save the location (HTTP ") +
                               std::to_string(preferredResponse.status) + ").";
             }
             return false;
@@ -1129,6 +1173,81 @@ bool BoosteroidAPI::startStreamingSession(
     return startStreamingSessionImpl(appId, outConfig, cancelFlag, true, log);
 }
 
+bool BoosteroidAPI::tryResumeLastSession(
+    int appId, StreamSessionConfig& outConfig,
+    std::atomic<bool>* cancelFlag,
+    const std::function<void(const std::string&)>& log) {
+    if (m_lastSession.sessionId.empty() || m_lastSession.appId != appId ||
+        m_lastSession.usedAt <= 0) {
+        return false;
+    }
+    const int64_t now = now_seconds();
+    if (now - m_lastSession.usedAt > 15 * 60) return false;
+
+    const auto report = [&](const std::string& message) {
+        if (log) log(message);
+    };
+    report(gnx::i18n::tr("Intentando recuperar la sesion anterior...",
+                         "Trying to resume the previous session..."));
+
+    gnx::Http http;
+    http.set_abort_flag(cancelFlag);
+    const auto headers = android_tv_headers(
+        false, m_authToken, m_userDataToken, m_deviceId);
+    std::string assignedGateway;
+    std::string signedQuery;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (!cancelled(cancelFlag) &&
+           std::chrono::steady_clock::now() < deadline) {
+        try {
+            const auto response = http.post(
+                m_baseUrl + "/api/v1/streaming/session/details?session=" +
+                    gnx::Http::urlencode(m_lastSession.sessionId),
+                "", headers);
+            if (is_success(response)) {
+                const auto parsed = parse_json_response(response);
+                if (!parsed.is_discarded()) {
+                    const nlohmann::json& details = *unwrap_payload(parsed);
+                    assignedGateway = clean_gateway_host(
+                        first_string(details, {"gw"}));
+                    signedQuery = first_string(
+                        details, {"queryString", "query_string"});
+                }
+                if (!signedQuery.empty() && !assignedGateway.empty()) break;
+            } else if (response.status >= 400 && response.status < 500) {
+                break;  // session expired or belongs to another machine
+            }
+        } catch (...) {
+        }
+        if (!wait_or_cancel(cancelFlag, 500)) return false;
+    }
+    if (cancelled(cancelFlag)) return false;
+    if (signedQuery.empty() || assignedGateway.empty()) {
+        report(gnx::i18n::tr(
+            "No se pudo recuperar la sesion anterior. Iniciando una nueva...",
+            "Could not resume the previous session. Starting a new one..."));
+        m_lastError.clear();
+        return false;
+    }
+
+    StreamSessionConfig resumed;
+    resumed.sessionId = m_lastSession.sessionId;
+    resumed.homeUrl = m_baseUrl;
+    resumed.assignedGateway = std::move(assignedGateway);
+    resumed.signedQuery = std::move(signedQuery);
+    resumed.accessToken = m_authToken;
+    resumed.authDataToken = m_userDataToken;
+    resumed.preferredCodec = "h264";
+    outConfig = std::move(resumed);
+    m_lastSession.usedAt = now_seconds();
+    saveLastSessionToSD();
+    report(gnx::i18n::tr("Sesion anterior recuperada.",
+                         "Previous session resumed."));
+    m_lastError.clear();
+    return true;
+}
+
 bool BoosteroidAPI::startStreamingSessionImpl(
     int appId, StreamSessionConfig& outConfig,
     std::atomic<bool>* cancelFlag, bool allowRequeue,
@@ -1136,9 +1255,14 @@ bool BoosteroidAPI::startStreamingSessionImpl(
     outConfig = StreamSessionConfig();
     m_lastError.clear();
     if (!isAuthenticated()) {
-        m_lastError = "No hay una sesion de Boosteroid activa.";
+        m_lastError = gnx::i18n::tr("No hay una sesion de Boosteroid activa.", "There is no active Boosteroid session.");
         return false;
     }
+
+    if (tryResumeLastSession(appId, outConfig, cancelFlag, log)) {
+        return true;
+    }
+    if (cancelled(cancelFlag)) return false;
 
     try {
         const auto report = [&](const std::string& message) {
@@ -1151,7 +1275,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
         if (m_currentUser.id.empty()) {
             BoosteroidUser profile;
             if (!getUserProfile(profile)) {
-                report("No se pudo resolver uid para la cola en tiempo real.");
+                report(gnx::i18n::tr("No se pudo resolver uid para la cola en tiempo real.", "Could not resolve uid for the realtime queue."));
                 m_lastError.clear();
             }
         }
@@ -1166,26 +1290,26 @@ bool BoosteroidAPI::startStreamingSessionImpl(
                 gnx::Http::urlencode(m_currentUser.id) + "&token=" +
                 gnx::Http::urlencode(token);
             std::string socketError;
-            report("Conectando a la cola en tiempo real...");
+            report(gnx::i18n::tr("Conectando a la cola en tiempo real...", "Connecting to the realtime queue..."));
             realtimeReady = realtime.connect(
                 host, path, "romfs:/cacert.pem", socketError);
             if (realtimeReady) {
-                report("Cola en tiempo real conectada.");
+                report(gnx::i18n::tr("Cola en tiempo real conectada.", "Realtime queue connected."));
             } else {
-                report("Cola en tiempo real no disponible: " + socketError);
+                report(gnx::i18n::tr("Cola en tiempo real no disponible: ", "Realtime queue unavailable: ") + socketError);
             }
         }
 #endif
 
         const std::string appBody = nlohmann::json({{"appId", appId}}).dump();
-        report("Solicitando maquina para la Switch...");
+        report(gnx::i18n::tr("Solicitando maquina para la Switch...", "Requesting a machine for the Switch..."));
         auto enqueue = http.post(
             m_baseUrl + "/api/v2/streaming/session/enqueue", appBody, headers);
-        report("Solicitud de cola HTTP " + std::to_string(enqueue.status) + ".");
+        report(gnx::i18n::tr("Solicitud de cola HTTP ", "Queue request HTTP ") + std::to_string(enqueue.status) + ".");
         if (!is_success(enqueue)) {
             m_lastError = upstream_error_message(enqueue.body);
             if (m_lastError.empty()) {
-                m_lastError = "No se pudo entrar en la cola (HTTP " +
+                m_lastError = gnx::i18n::tr("No se pudo entrar en la cola (HTTP ", "Could not enter the queue (HTTP ") +
                               std::to_string(enqueue.status) + ").";
             }
             return false;
@@ -1205,16 +1329,13 @@ bool BoosteroidAPI::startStreamingSessionImpl(
             });
         };
 
-        // VM allocation is asynchronous. This mirrors the TV/web clients but
-        // runs on the caller's worker thread, so the Switch UI remains fluid.
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::seconds(180);
+        // VM allocation is asynchronous. Wait in the queue for as long as the
+        // user keeps the launch panel open; only cancellation ends the wait.
         auto nextRestPoll = std::chrono::steady_clock::now();
         auto nextPing = std::chrono::steady_clock::now() +
                         std::chrono::seconds(5);
         std::string lastQueueStatus;
-        while (!cancelled(cancelFlag) && tokens.empty() && !hasReadyQuery() &&
-               std::chrono::steady_clock::now() < deadline) {
+        while (!cancelled(cancelFlag) && tokens.empty() && !hasReadyQuery()) {
 #if defined(__SWITCH__)
             if (realtimeReady && realtime.connected()) {
                 std::string message;
@@ -1238,7 +1359,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
                         }
                     }
                 } else if (!socketError.empty()) {
-                    report("Se perdio la cola en tiempo real: " + socketError);
+                    report(gnx::i18n::tr("Se perdio la cola en tiempo real: ", "Lost the realtime queue: ") + socketError);
                     realtimeReady = false;
                 }
             }
@@ -1276,14 +1397,14 @@ bool BoosteroidAPI::startStreamingSessionImpl(
         }
 
         if (cancelled(cancelFlag)) return false;
-        report("Cola completada: tokens=" + std::to_string(tokens.size()) +
+        report(gnx::i18n::tr("Cola completada: tokens=", "Queue completed: tokens=") + std::to_string(tokens.size()) +
                " consultas=" + std::to_string(queries.size()) + ".");
 
         nlohmann::json startJson = nlohmann::json::object();
         bool started = false;
         bool useV1 = false;
         for (const std::string& token : tokens) {
-            report("Confirmando la maquina asignada...");
+            report(gnx::i18n::tr("Confirmando la maquina asignada...", "Confirming the assigned machine..."));
             const std::string startBody = nlohmann::json({
                 {"appId", appId}, {"sessionToken", token}}).dump();
             const auto response = http.post(
@@ -1291,8 +1412,8 @@ bool BoosteroidAPI::startStreamingSessionImpl(
                 startBody, headers);
             const auto parsed = parse_json_response(response);
             const int errorCode = parsed.is_discarded() ? 0 : find_error_code(parsed);
-            report("Inicio de sesion HTTP " + std::to_string(response.status) +
-                   " codigo=" + std::to_string(errorCode) + ".");
+            report(gnx::i18n::tr("Inicio de sesion HTTP ", "Session start HTTP ") + std::to_string(response.status) +
+                   gnx::i18n::tr(" codigo=", " code=") + std::to_string(errorCode) + ".");
             if (is_success(response)) {
                 startJson = parsed.is_discarded() ? nlohmann::json::object() : parsed;
                 started = true;
@@ -1316,7 +1437,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
             if (errorCode == 340007 || response.status == 400) continue;
             m_lastError = upstream_error_message(response.body);
             if (m_lastError.empty()) {
-                m_lastError = "Boosteroid rechazo el inicio (HTTP " +
+                m_lastError = gnx::i18n::tr("Boosteroid rechazo el inicio (HTTP ", "Boosteroid rejected the start (HTTP ") +
                               std::to_string(response.status) + ").";
             }
             return false;
@@ -1324,7 +1445,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
 
         // Older accounts/rollouts still advertise the v1 launch operation.
         if (!started && useV1) {
-            report("La cuenta solicito el inicio compatible v1.");
+            report(gnx::i18n::tr("La cuenta solicito el inicio compatible v1.", "The account requested the v1-compatible start."));
             const auto response = http.post(
                 m_baseUrl + "/api/v1/streaming/session/start", appBody, headers);
             if (is_success(response)) {
@@ -1334,7 +1455,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
             }
         }
         if (!started && queries.empty()) {
-            m_lastError = "Boosteroid no entrego una maquina lista antes del tiempo limite.";
+            m_lastError = gnx::i18n::tr("Boosteroid no confirmo la maquina asignada.", "Boosteroid did not confirm the assigned machine.");
             return false;
         }
 
@@ -1356,10 +1477,10 @@ bool BoosteroidAPI::startStreamingSessionImpl(
         }
         if (sessionId.empty() && !sessionIds.empty()) sessionId = sessionIds.front();
         if (sessionId.empty()) {
-            m_lastError = "Boosteroid inicio la maquina, pero no devolvio sessionId.";
+            m_lastError = gnx::i18n::tr("Boosteroid inicio la maquina, pero no devolvio sessionId.", "Boosteroid started the machine but returned no sessionId.");
             return false;
         }
-        report("Sesion creada; obteniendo gateway firmado...");
+        report(gnx::i18n::tr("Sesion creada; obteniendo gateway firmado...", "Session created; obtaining signed gateway..."));
 
         collect_gateways(startJson, outConfig.gateways);
         if (outConfig.gateways.empty()) {
@@ -1399,7 +1520,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
                         }
                     }
                 }
-                report("Detalles de streaming HTTP " +
+                report(gnx::i18n::tr("Detalles de streaming HTTP ", "Streaming details HTTP ") +
                        std::to_string(response.status) + " gw=" +
                        (assignedGateway.empty() ? "ausente" : assignedGateway) +
                        " firmaBytes=" + std::to_string(signedQuery.size()) + ".");
@@ -1421,14 +1542,18 @@ bool BoosteroidAPI::startStreamingSessionImpl(
         outConfig.authDataToken = m_userDataToken;
         outConfig.preferredCodec = "h264";
         if (outConfig.signedQuery.empty()) {
-            m_lastError = "La maquina esta lista, pero falta la firma del gateway.";
+            m_lastError = gnx::i18n::tr("La maquina esta lista, pero falta la firma del gateway.", "The machine is ready, but the gateway signature is missing.");
             return false;
         }
         if (outConfig.assignedGateway.empty() && outConfig.gateways.empty()) {
-            m_lastError = "La maquina esta lista, pero Boosteroid no devolvio su gateway.";
+            m_lastError = gnx::i18n::tr("La maquina esta lista, pero Boosteroid no devolvio su gateway.", "The machine is ready, but Boosteroid returned no gateway.");
             return false;
         }
-        report("Gateway firmado listo; preparando WebRTC...");
+        m_lastSession.sessionId = outConfig.sessionId;
+        m_lastSession.appId = appId;
+        m_lastSession.usedAt = now_seconds();
+        saveLastSessionToSD();
+        report(gnx::i18n::tr("Gateway firmado listo; preparando WebRTC...", "Signed gateway ready; preparing WebRTC..."));
         m_lastError.clear();
         return true;
     } catch (const std::exception& error) {
@@ -1439,6 +1564,10 @@ bool BoosteroidAPI::startStreamingSessionImpl(
 
 bool BoosteroidAPI::stopStreamingSession(const std::string& sessionId) {
     if (sessionId.empty()) return false;
+    if (sessionId == m_lastSession.sessionId) {
+        m_lastSession.usedAt = now_seconds();
+        saveLastSessionToSD();
+    }
     gnx::Http http;
     const auto headers = android_tv_headers(
         true, m_authToken, m_userDataToken, m_deviceId);

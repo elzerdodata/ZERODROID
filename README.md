@@ -3,7 +3,7 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.7 provides QR login, a controller-first game library,
+homebrew. Version 0.8.8 provides QR login, a controller-first game library,
 native H.264 video, Opus audio and complete controller input.
 
 > [!IMPORTANT]
@@ -11,7 +11,16 @@ native H.264 video, Opus audio and complete controller input.
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.7
+## New in v0.8.8
+
+- Added 720HQ (20 Mbps) and 1080HQ (30 Mbps) quality modes.
+- Added left-stick navigation for the library and Settings.
+- Localized all UI and status messages for the selected language.
+- The queue now waits until the user cancels instead of timing out.
+- Added 15-minute last-session reuse for the same game.
+- Removed the unused Xbox Guide/Game Bar overlay and stick-click shortcut.
+
+## Included from v0.8.7
 
 - More resilient video recovery after packet loss and decode errors.
 - Broken predictive frames are discarded until a fresh IDR instead of showing
@@ -35,11 +44,6 @@ native H.264 video, Opus audio and complete controller input.
   without touch input.
 - The build output is now named `ZERODROID.nro`.
 
-## Included from v0.8.4
-
-- The touch Xbox Guide/Home button and the stick-click combo now open the Xbox
-  Game Bar through Boosteroid's Ctrl+L shortcut.
-
 ## Included from v0.8.3
 
 - Optional in-stream ping display, hidden by default for a cleaner picture.
@@ -58,7 +62,6 @@ native H.264 video, Opus audio and complete controller input.
 - Completely new ZERODROID identity and lilac/graphite visual system.
 - Original ZD application icon.
 - Live gateway ping meter during streaming.
-- Touch Xbox Guide/Home button. Both stick clicks also send Guide.
 - Touch two-dot menu during streaming.
 - In-stream performance HUD, Nintendo/Xbox face-button layout and image
   controls.
@@ -83,8 +86,9 @@ not include or install custom firmware.
 ## Controls
 
 - **Minus in the library:** ZERODROID Settings.
-- **Streaming resolution in Settings:** Automatic, 720p or 1080p; applies on
-  the next game launch.
+- **Streaming resolution in Settings:** Automatic, 720p, 720HQ, 1080p or
+  1080HQ; applies on the next game launch.
+- **Left stick or D-pad:** navigate the library and Settings menus.
 - **ZL / ZR:** switch between All, Favorites and Recent.
 - **Y in the library:** search using the system keyboard.
 - **X in the library:** add or remove the selected game from Favorites.
@@ -96,8 +100,6 @@ not include or install custom firmware.
   sends a left click and a long press sends a right click.
 - **Ping in the stream panel:** show or hide the latency badge; it starts off
   in every new session.
-- **Touch Xbox symbol:** open Xbox Game Bar/Guide.
-- **Press both sticks:** open Xbox Game Bar/Guide without touch.
 - **L + R + Minus:** stop streaming and return to the library.
 
 Application data is stored only under `sdmc:/switch/ZERODROID/`.

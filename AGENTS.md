@@ -5,9 +5,10 @@
 - Unofficial Boosteroid cloud-gaming client for Nintendo Switch homebrew.
   Buildable code lives under `switch/`; the repo root is docs and release assets.
 - C++17, devkitA64/libnx, SDL2, FFmpeg/Opus, libpeer WebRTC, and deko3d.
-- There is no test suite, CI, package manager, or host build target. Verification
-  is a devkitA64 build plus an on-console run. `src/core` has some non-Switch
-  fallbacks, but they are not wired into a host/test build.
+- There is no test suite, package manager, or host build target. CI only builds
+  and publishes releases on `main`; verification is a devkitA64 build plus an
+  on-console run. `src/core` has some non-Switch fallbacks, but no host/test
+  target wires them up.
 - The build uses `-fno-rtti`; avoid `dynamic_cast` and `typeid`.
 
 ## Build
@@ -45,14 +46,23 @@ script with `--container`, which builds in-place without nested Docker.
 ## Architecture
 
 - `switch/src/core/` — Boosteroid API (`boosteroid_api.*`), blocking libcurl
-  wrapper (`http.*`), and the QR encoder. `BoosteroidAPI` loads the saved
-  session in its constructor.
+  wrapper (`http.*`), QR encoder, and runtime language switch (`i18n.hpp`).
+  `BoosteroidAPI` loads the saved auth session and last streaming session in its
+  constructor.
 - `switch/src/switch/main.cpp` — the entire SDL2 login/library/settings UI,
-  input loop, and async request handling. UI strings are Spanish/English pairs
-  through `ui("es", "en")`; Spanish is the default.
+  input loop, and async request handling. Use `ui("es", "en")` for main UI text;
+  shared engine/API code must use `gnx::i18n::tr("es", "en")`. Never hardcode one
+  language. The selected language is applied at startup and updated immediately
+  from Settings.
+- Home/settings navigation accepts both D-pad and left stick through `navDown`
+  and `AnalogNavigation` (deadzone + repeat). Streaming still sends the raw pad
+  state to `Engine::send_gamepad`; do not route gameplay through `navDown`.
 - `switch/src/switch/stream/` — streaming engine, FFmpeg/Opus pipeline, libpeer
   transport, and deko3d renderer. `Engine` owns worker/decode/native-UDP threads;
   only the main thread may create or destroy SDL textures.
+- Streaming resolution is requested in the gateway `x`/`y` parameters and
+  `bitrate_max`: 720p = 15 Mbps, 720HQ = 20 Mbps, 1080p = 25 Mbps,
+  1080HQ = 30 Mbps; Auto follows dock mode.
 - During playback, SDL output is suspended and deko3d takes over. Leaving the
   stream calls `end_deko_output()` and `Gfx::resume()`, which rebuilds the SDL
   window/renderer and clears the text cache. Shaders load from `romfs:/shaders/`.
@@ -64,10 +74,24 @@ script with `--container`, which builds in-place without nested Docker.
 ## Runtime and debugging
 
 - App data is under `sdmc:/switch/ZERODROID/` (uppercase; the lowercase path in
-  a `boosteroid_api.hpp` comment is stale): `session.json`, `settings.json`,
-  `zerodroid.log`, `stream.log`, rotated `stream-prev.log`, and `covers/`.
+  a `boosteroid_api.hpp` comment is stale): `session.json`, `last_session.json`,
+  `settings.json`, `zerodroid.log`, `stream.log`, rotated `stream-prev.log`, and
+  `covers/`. Never commit `session.json` or `last_session.json`.
 - `zerodroid.log` is recreated each launch; `stream.log` rotates on each stream
   start. Ask for these logs when debugging playback or login issues.
+- The queue has no client-side timeout: it waits until the user cancels
+  (`quit_`/cancel flag). Do not reintroduce a fixed queue deadline.
+- `last_session.json` stores `sessionId`, `appId`, and `usedAt`. Starting the same
+  game within 15 minutes first calls
+  `/api/v1/streaming/session/details?session=...` to resume; any error falls back
+  to a fresh enqueue. `stopStreamingSession` refreshes `usedAt`, and logout
+  removes the file.
+- Video recovery: consume decoder errors even when a frame was rendered, drop
+  predictive frames until a fresh IDR, and request keyframes with a 500 ms
+  debounce. The jitter also probes for an IDR every 4 s. Never call
+  `avcodec_flush_buffers()` on the NVTEGRA backend; deko3d may still own those
+  surfaces (green/pink frames). Native UDP bypasses `VideoJitterBuffer` and has
+  no WebRTC PLI path, so do not assume PLI-based recovery works there.
 - Keep libpeer at `LOG_LEVEL=2` in `deps/build-switch.sh`; DEBUG-level
   per-packet logging floods the SD card and stalls video.
 - Boosteroid endpoints are reverse-engineered and can change without notice.

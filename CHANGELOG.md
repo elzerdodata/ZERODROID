@@ -1,5 +1,14 @@
 # ZERODROID changelog
 
+## v0.8.8 - Quality modes and session reuse
+
+- Added 720HQ (20 Mbps) and 1080HQ (30 Mbps) streaming modes.
+- Added left-stick navigation for the library and Settings.
+- Localized all UI and status messages for the selected language.
+- Removed the client-side queue timeout; waiting continues until cancellation.
+- Added 15-minute reuse of the previous streaming session for the same game.
+- Removed the Xbox Guide/Game Bar overlay and the both-sticks shortcut.
+
 ## v0.8.7 - Video recovery
 
 - Reworked video recovery after RTP loss and decode errors.

@@ -119,15 +119,29 @@ private:
                                    std::atomic<bool>* cancelFlag,
                                    bool allowRequeue,
                                    const std::function<void(const std::string&)>& log);
+    bool tryResumeLastSession(
+        int appId, StreamSessionConfig& outConfig,
+        std::atomic<bool>* cancelFlag,
+        const std::function<void(const std::string&)>& log);
+    void loadLastSessionFromSD();
+    bool saveLastSessionToSD();
+
+    struct LastSession {
+        std::string sessionId;
+        int appId = 0;
+        int64_t usedAt = 0;
+    };
 
     std::string m_baseUrl;
     std::string m_authToken;
     std::string m_refreshToken;
     std::string m_userDataToken;
     std::string m_sessionFilePath;
+    std::string m_lastSessionFilePath;
     std::string m_deviceId;
     std::string m_lastError;
     BoosteroidUser m_currentUser;
+    LastSession m_lastSession;
 };
 
 } // namespace ZERODROID

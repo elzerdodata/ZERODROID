@@ -1,6 +1,7 @@
 #include "engine.hpp"
 
 #include "../../core/http.hpp"
+#include "../../core/i18n.hpp"
 #include "json.hpp"
 
 extern "C" {
@@ -32,10 +33,10 @@ gnx::stream::Engine* g_active_engine = nullptr;
 bool g_peer_initialized = false;
 
 void stream_dimensions(int mode, int& width, int& height) {
-    if (mode == 1) {
+    if (mode == 1 || mode == 2) {
         width = 1280;
         height = 720;
-    } else if (mode == 2) {
+    } else if (mode == 3 || mode == 4) {
         width = 1920;
         height = 1080;
     } else {
@@ -46,10 +47,15 @@ void stream_dimensions(int mode, int& width, int& height) {
     }
 }
 
-int stream_bitrate(int width) {
-    // Match the resolution requested from the gateway; the service uses
-    // bitrate_max as the encoder ceiling for this session.
-    return width >= 1920 ? 25000000 : 15000000;
+int stream_bitrate(int mode, int width) {
+    // HQ modes request the same resolution with a higher encoder ceiling.
+    switch (mode) {
+        case 1: return 15000000;   // 720p
+        case 2: return 20000000;   // 720HQ
+        case 3: return 25000000;   // 1080p
+        case 4: return 30000000;   // 1080HQ
+        default: return width >= 1920 ? 25000000 : 15000000;
+    }
 }
 
 void av_log_capture(void*, int level, const char* format, va_list args) {
@@ -307,7 +313,7 @@ int open_udp_channel(const std::string& host, int port,
     const int lookup = getaddrinfo(host.c_str(), service.c_str(), &hints,
                                    &addresses);
     if (lookup != 0 || !addresses) {
-        error = "No se pudo resolver el servidor UDP nativo.";
+        error = gnx::i18n::tr("No se pudo resolver el servidor UDP nativo.", "Could not resolve the native UDP server.");
         return -1;
     }
 
@@ -322,7 +328,7 @@ int open_udp_channel(const std::string& host, int port,
     }
     freeaddrinfo(addresses);
     if (fd < 0) {
-        error = "No se pudo abrir el canal UDP nativo.";
+        error = gnx::i18n::tr("No se pudo abrir el canal UDP nativo.", "Could not open the native UDP channel.");
         return -1;
     }
 
@@ -369,7 +375,7 @@ void Engine::global_shutdown() {
 }
 
 void Engine::set_stream_resolution(int mode) {
-    streamResolution_ = std::clamp(mode, 0, 2);
+    streamResolution_ = std::clamp(mode, 0, 4);
 }
 
 void Engine::start(int appId, const std::string& preferredGateway) {
@@ -391,7 +397,6 @@ void Engine::start(int appId, const std::string& preferredGateway) {
     peerState_ = PEER_CONNECTION_NEW;
     controllerId_ = -1;
     inputCommand_ = 0;
-    guidePressed_ = false;
     pingMs_ = -1;
     lastKeyframeRequestMs_ = 0;
     mouseX_ = 0.5f;
@@ -406,7 +411,6 @@ void Engine::start(int appId, const std::string& preferredGateway) {
     dataChannelOpened_ = false;
     padInitialized_ = false;
     inputLogged_ = false;
-    previousGuide_ = false;
     remoteCandidates_.clear();
     {
         std::lock_guard<std::mutex> lock(nativeMutex_);
@@ -438,7 +442,7 @@ void Engine::start(int appId, const std::string& preferredGateway) {
     sharedFrameValid_ = false;
 
     state_ = EngineState::StartingSession;
-    set_status("Solicitando una maquina a Boosteroid...");
+    set_status(gnx::i18n::tr("Solicitando una maquina a Boosteroid...", "Requesting a machine from Boosteroid..."));
     workerThread_ = std::thread(&Engine::worker, this);
     decodeThread_ = std::thread(&Engine::decode_loop, this);
 }
@@ -508,7 +512,7 @@ void Engine::worker() {
                 set_status(message);
             })) {
         if (quit_) return;
-        fail(api_.lastError().empty() ? "No se pudo iniciar el juego."
+        fail(api_.lastError().empty() ? gnx::i18n::tr("No se pudo iniciar el juego.", "Could not start the game.")
                                      : api_.lastError());
         return;
     }
@@ -524,7 +528,7 @@ void Engine::worker() {
 
     bool peerRequested = false;
     bool announcedController = false;
-    bool announcedInputClasses = false;
+    bool announcedMouse = false;
     uint64_t lastControllerAnnouncement = 0;
     uint64_t lastPingRequest = 0;
     uint64_t connectedAt = SDL_GetTicks64();
@@ -549,12 +553,8 @@ void Engine::worker() {
         }
 
         const uint64_t controlNow = SDL_GetTicks64();
-        if (!announcedInputClasses) {
-            announcedInputClasses = true;
-            // Register keyboard and mouse so the gateway accepts the Ctrl+L
-            // Xbox Game Bar shortcut and the virtual touchpad pointer.
-            send_control_json(nlohmann::json({
-                {"type", "keyboard"}, {"action", "connected"}}).dump());
+        if (!announcedMouse) {
+            announcedMouse = true;
             send_control_json(nlohmann::json({
                 {"type", "mouse"}, {"action", "connected"},
                 {"LeftBtnState", false},
@@ -586,8 +586,8 @@ void Engine::worker() {
             if (state_ == EngineState::WaitingForVideo && !gotFrame_ &&
                 nativeStartedTicks_ > 0 && now - nativeStartedTicks_ > 30000) {
                 fail(gotVideoPacket_
-                         ? "Llegan paquetes UDP, pero no se pudo reconstruir el video."
-                         : "El gateway nativo conecto, pero no envio video UDP.");
+                         ? gnx::i18n::tr("Llegan paquetes UDP, pero no se pudo reconstruir el video.", "UDP packets arrive, but video could not be reconstructed.")
+                         : gnx::i18n::tr("El gateway nativo conecto, pero no envio video UDP.", "The native gateway connected, but sent no UDP video."));
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -622,7 +622,7 @@ void Engine::worker() {
                  peerState == PEER_CONNECTION_COMPLETED) &&
                 state_ == EngineState::Negotiating) {
                 state_ = EngineState::WaitingForVideo;
-                set_status("Conectado. Esperando el primer fotograma...");
+                set_status(gnx::i18n::tr("Conectado. Esperando el primer fotograma...", "Connected. Waiting for the first frame..."));
                 send_control_json(nlohmann::json({
                     {"type", "settings"}, {"action", "ready"}}).dump());
                 send_control_json(nlohmann::json({
@@ -631,7 +631,7 @@ void Engine::worker() {
             }
             if (peerState == PEER_CONNECTION_FAILED ||
                 peerState == PEER_CONNECTION_DISCONNECTED) {
-                fail("La conexion WebRTC con el gateway fallo.");
+                fail(gnx::i18n::tr("La conexion WebRTC con el gateway fallo.", "The WebRTC connection to the gateway failed."));
                 return;
             }
             if (now - lastConsent > 2000) {
@@ -652,13 +652,13 @@ void Engine::worker() {
             }
             if (state_ == EngineState::WaitingForVideo &&
                 now - connectedAt > 30000 && !gotFrame_) {
-                fail("WebRTC conecto, pero Boosteroid no envio video.");
+                fail(gnx::i18n::tr("WebRTC conecto, pero Boosteroid no envio video.", "WebRTC connected, but Boosteroid sent no video."));
                 return;
             }
             if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } else {
             if (SDL_GetTicks64() - connectedAt > 20000 && !peerRequested) {
-                fail("El gateway no solicito iniciar WebRTC.");
+                fail(gnx::i18n::tr("El gateway no solicito iniciar WebRTC.", "The gateway did not request WebRTC startup."));
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -666,13 +666,13 @@ void Engine::worker() {
     }
     if (!quit_ && state_ != EngineState::Failed) {
         state_ = EngineState::Stopped;
-        set_status("La sesion termino.");
+        set_status(gnx::i18n::tr("La sesion termino.", "The session ended."));
     }
 }
 
 bool Engine::connect_gateway(const ZERODROID::StreamSessionConfig& config) {
     state_ = EngineState::ConnectingGateway;
-    set_status("Conectando con el gateway de streaming...");
+    set_status(gnx::i18n::tr("Conectando con el gateway de streaming...", "Connecting to the streaming gateway..."));
     // The details endpoint signs a particular VM gateway.  It must take
     // priority over any generic/preferred list entry.
     if (!config.assignedGateway.empty()) gatewayHost_ = config.assignedGateway;
@@ -687,7 +687,7 @@ bool Engine::connect_gateway(const ZERODROID::StreamSessionConfig& config) {
     const auto slash = gatewayHost_.find('/');
     if (slash != std::string::npos) gatewayHost_.erase(slash);
     if (gatewayHost_.empty()) {
-        fail("Boosteroid no devolvio un gateway de streaming.");
+        fail(gnx::i18n::tr("Boosteroid no devolvio un gateway de streaming.", "Boosteroid did not return a streaming gateway."));
         return false;
     }
 
@@ -707,7 +707,7 @@ bool Engine::connect_gateway(const ZERODROID::StreamSessionConfig& config) {
         }
     }
     if (query.empty()) {
-        fail("Falta la firma para conectarse al gateway.");
+        fail(gnx::i18n::tr("Falta la firma para conectarse al gateway.", "The gateway signature is missing."));
         return false;
     }
 
@@ -727,7 +727,7 @@ bool Engine::connect_gateway(const ZERODROID::StreamSessionConfig& config) {
         std::to_string(query.size()) + " controlPath=/native device=tv requested=" +
         std::to_string(streamWidth) + "x" + std::to_string(streamHeight));
     if (!control_.connect(gatewayHost_, path, "romfs:/cacert.pem", error)) {
-        fail(error.empty() ? "No se pudo abrir el canal de control." : error);
+        fail(error.empty() ? gnx::i18n::tr("No se pudo abrir el canal de control.", "Could not open the control channel.") : error);
         return false;
     }
     return true;
@@ -737,7 +737,7 @@ bool Engine::start_native_udp(const std::string& host, int videoPort,
                               int audioPort) {
     if (nativeMediaStarted_) return true;
     if (host.empty() || videoPort <= 0 || audioPort <= 0) {
-        fail("El gateway devolvio una configuracion UDP incompleta.");
+        fail(gnx::i18n::tr("El gateway devolvio una configuracion UDP incompleta.", "The gateway returned an incomplete UDP configuration."));
         return false;
     }
 
@@ -769,7 +769,7 @@ bool Engine::start_native_udp(const std::string& host, int videoPort,
     nativeStartedTicks_ = SDL_GetTicks64();
     nativeMediaStarted_ = true;
     state_ = EngineState::WaitingForVideo;
-    set_status("Canal nativo conectado. Esperando el primer fotograma...");
+    set_status(gnx::i18n::tr("Canal nativo conectado. Esperando el primer fotograma...", "Native channel connected. Waiting for the first frame..."));
     log("native UDP ready videoLocalPort=" +
         std::to_string(videoLocalPort) + " audioLocalPort=" +
         std::to_string(audioLocalPort));
@@ -1057,7 +1057,7 @@ void Engine::handle_native_video_packet(const uint8_t* data, size_t size) {
 
 bool Engine::setup_peer() {
     state_ = EngineState::Negotiating;
-    set_status("Negociando video y audio WebRTC...");
+    set_status(gnx::i18n::tr("Negociando video y audio WebRTC...", "Negotiating WebRTC video and audio..."));
     peerId_ = uuid_v4();
 
     std::vector<IceEntry> iceEntries;
@@ -1098,7 +1098,7 @@ bool Engine::setup_peer() {
         std::lock_guard<std::mutex> lock(peerMutex_);
         peer_ = peer_connection_create(&peerConfig);
         if (!peer_) {
-            fail("No se pudo crear PeerConnection.");
+            fail(gnx::i18n::tr("No se pudo crear PeerConnection.", "Could not create PeerConnection."));
             return false;
         }
         peer_connection_oniceconnectionstatechange(peer_, &Engine::on_peer_state);
@@ -1106,7 +1106,7 @@ bool Engine::setup_peer() {
                                       &Engine::on_channel_open, nullptr);
         const char* generated = peer_connection_create_offer(peer_);
         if (!generated) {
-            fail("No se pudo crear la oferta WebRTC.");
+            fail(gnx::i18n::tr("No se pudo crear la oferta WebRTC.", "Could not create the WebRTC offer."));
             return false;
         }
         offer = generated;
@@ -1123,7 +1123,7 @@ bool Engine::setup_peer() {
             {"Accept: application/json", "Content-Type: application/json"});
         log("WebRTC offer HTTP " + std::to_string(response.status));
         if (!response.ok()) {
-            fail("El gateway rechazo la oferta WebRTC (HTTP " +
+            fail(gnx::i18n::tr("El gateway rechazo la oferta WebRTC (HTTP ", "The gateway rejected the WebRTC offer (HTTP ") +
                  std::to_string(response.status) + ").");
             return false;
         }
@@ -1132,7 +1132,7 @@ bool Engine::setup_peer() {
             ? std::string()
             : find_nested_string(answerJson, {"sdp"});
         if (answer.empty()) {
-            fail("El gateway devolvio una respuesta WebRTC no valida.");
+            fail(gnx::i18n::tr("El gateway devolvio una respuesta WebRTC no valida.", "The gateway returned an invalid WebRTC response."));
             return false;
         }
 
@@ -1201,7 +1201,7 @@ bool Engine::setup_peer() {
             }
         }
     } catch (const std::exception& error) {
-        fail(std::string("Fallo de señalizacion WebRTC: ") + error.what());
+        fail(std::string(gnx::i18n::tr("Fallo de señalizacion WebRTC: ", "WebRTC signaling failure: ")) + error.what());
         return false;
     }
     return true;
@@ -1282,7 +1282,7 @@ void Engine::handle_control_message(const std::string& raw) {
                 {"type", "androidTV"}, {"ver", "v.2.5.10.tv"},
                 {"gpu", "Tegra X1"}, {"proto", 2}, {"codec", "h264"},
                 {"framerate_max", 60},
-                {"bitrate_max", stream_bitrate(streamWidth)},
+                {"bitrate_max", stream_bitrate(streamResolution_, streamWidth)},
                 {"hdr", false}}}}).dump());
         return;
     }
@@ -1359,22 +1359,6 @@ void Engine::send_input_json(nlohmann::json payload) {
     }
 }
 
-void Engine::send_guide_shortcut(bool pressed) {
-    auto send_key = [&](int code, bool down) {
-        send_input_json({{"type", "keyboard"}, {"action", "button"},
-                         {"code", code}, {"isPressed", down}});
-    };
-    // Boosteroid opens the Xbox Game Bar on Ctrl+L. Keep the chord held while
-    // the Guide input is active so the remote side sees both keys together.
-    if (pressed) {
-        send_key(0x11 /* VK_CONTROL */, true);
-        send_key(0x4C /* 'L' */, true);
-    } else {
-        send_key(0x4C /* 'L' */, false);
-        send_key(0x11 /* VK_CONTROL */, false);
-    }
-}
-
 void Engine::virtual_mouse_move(float dx, float dy) {
     constexpr float kSensitivity = 1.8f;
     mouseX_ = std::clamp(mouseX_ + dx * kSensitivity / 1920.0f, 0.0f, 1.0f);
@@ -1421,18 +1405,9 @@ void Engine::send_gamepad(HidAnalogStickState left,
     if (id <= 0 || !control_.connected()) return;
     std::lock_guard<std::mutex> lock(inputMutex_);
 
-    const bool stickComboGuide =
-        (buttons & HidNpadButton_StickL) &&
-        (buttons & HidNpadButton_StickR);
-    const bool guide = guidePressed_.load() || stickComboGuide;
-    u64 effectiveButtons = buttons;
-    if (stickComboGuide) {
-        effectiveButtons &= ~(HidNpadButton_StickL | HidNpadButton_StickR);
-    }
-
     auto sendButton = [&](u64 mask, int index) {
         const bool before = (previousButtons_ & mask) != 0;
-        const bool after = (effectiveButtons & mask) != 0;
+        const bool after = (buttons & mask) != 0;
         if (!padInitialized_ || before != after) {
             send_input_json({{"type", "controller"}, {"action", "button"},
                              {"id", id}, {"button", index},
@@ -1463,17 +1438,6 @@ void Engine::send_gamepad(HidAnalogStickState left,
     // Android can report digital trigger KeyEvents in addition to axes.
     sendButton(HidNpadButton_ZL, 10);
     sendButton(HidNpadButton_ZR, 11);
-    if (guide != previousGuide_) {
-        // Boosteroid opens the Xbox Game Bar with Ctrl+L, not with the
-        // controller Guide button. Keep the chord down for as long as the
-        // touch Xbox symbol or the stick-click combo is active.
-        send_guide_shortcut(guide);
-    }
-    if (!padInitialized_ || guide != previousGuide_) {
-        send_input_json({{"type", "controller"}, {"action", "button"},
-                         {"id", id}, {"button", 16},
-                         {"value", guide ? 1 : 0}});
-    }
 
     auto sendAxis = [&](int index, int before, int after) {
         if (!padInitialized_ || axis_changed(before, after)) {
@@ -1490,17 +1454,17 @@ void Engine::send_gamepad(HidAnalogStickState left,
     sendAxis(3, controller_axis(previousRight_.x), rightX);
     sendAxis(4, controller_axis(-previousRight_.y), rightY);
     const int oldZl = (previousButtons_ & HidNpadButton_ZL) ? 32767 : -32767;
-    const int newZl = (effectiveButtons & HidNpadButton_ZL) ? 32767 : -32767;
+    const int newZl = (buttons & HidNpadButton_ZL) ? 32767 : -32767;
     const int oldZr = (previousButtons_ & HidNpadButton_ZR) ? 32767 : -32767;
-    const int newZr = (effectiveButtons & HidNpadButton_ZR) ? 32767 : -32767;
+    const int newZr = (buttons & HidNpadButton_ZR) ? 32767 : -32767;
     sendAxis(2, oldZl, newZl);
     sendAxis(5, oldZr, newZr);
 
     int hat = 0;
-    const bool up = effectiveButtons & HidNpadButton_Up;
-    const bool down = effectiveButtons & HidNpadButton_Down;
-    const bool leftPressed = effectiveButtons & HidNpadButton_Left;
-    const bool rightPressed = effectiveButtons & HidNpadButton_Right;
+    const bool up = buttons & HidNpadButton_Up;
+    const bool down = buttons & HidNpadButton_Down;
+    const bool leftPressed = buttons & HidNpadButton_Left;
+    const bool rightPressed = buttons & HidNpadButton_Right;
     if (up && leftPressed) hat = 9;
     else if (up && rightPressed) hat = 3;
     else if (down && leftPressed) hat = 12;
@@ -1530,8 +1494,7 @@ void Engine::send_gamepad(HidAnalogStickState left,
 
     previousLeft_ = left;
     previousRight_ = right;
-    previousButtons_ = effectiveButtons;
-    previousGuide_ = guide;
+    previousButtons_ = buttons;
     padInitialized_ = true;
 }
 
@@ -1641,7 +1604,7 @@ void Engine::decode_loop() {
         }
         if (!gotFrame_.exchange(true)) {
             state_ = EngineState::Streaming;
-            set_status("Streaming activo");
+            set_status(gnx::i18n::tr("Streaming activo", "Streaming active"));
             log("first decoded video frame");
         }
     }

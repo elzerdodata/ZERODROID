@@ -19,7 +19,6 @@ struct QuickRect {
 // while the rasterized artwork inside them is deliberately much smaller.
 inline constexpr QuickRect kQuickTextureRect{1160, 8, 672, 812};
 inline constexpr QuickRect kQuickToggleRect{1760, 8, 72, 72};
-inline constexpr QuickRect kGuideButtonRect{1840, 8, 72, 72};
 inline constexpr QuickRect kQuickPanelRect{1160, 104, 508, 716};
 
 inline constexpr int kQuickRowCount = 8;

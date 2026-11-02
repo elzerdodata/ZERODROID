@@ -69,9 +69,6 @@ public:
         set_quick_menu_state(next);
     }
 
-    // Highlight the always-visible touchscreen Xbox Guide/Home button.
-    void set_guide_pressed(bool pressed) { guide_pressed_ = pressed; }
-
     // Live network stats for the HUD, fed once per second from the streaming
     // worker thread (stored atomically; read on the render thread).
     void set_net_stats(float mbps, float loss_pct, int buffer_ms) {
@@ -137,7 +134,6 @@ private:
     void update_hud(AVFrame* frame);   // recompute stats, re-rasterize on change
     void rasterize_hud();              // compose panel bg + text into hud_cpu_
     void blit_text(const char* s, int x, int y);  // white text onto hud_pixels_
-    void rasterize_guide();            // compose Guide/Home touch button
     void rasterize_quick_menu();       // compose dots + expanded picture panel
     void rasterize_cursor();           // compose purple virtual mouse cursor
     void blit_quick_text(const char* s, int x, int y);
@@ -223,20 +219,6 @@ private:
     std::atomic<float> net_loss_{0.0f};
     std::atomic<int> net_buffer_ms_{0};
     std::atomic<bool> net_valid_{false};
-
-    // Always-on top-right Xbox Guide/Home touch overlay. It has its own RGBA
-    // texture so the optional debug HUD can remain independently disabled.
-    // 96 keeps the RGBA pitch aligned; the square texture is scaled into the
-    // 72x72 design-space touch target.
-    static constexpr uint32_t kGuideTexW = 96;
-    static constexpr uint32_t kGuideTexH = 96;
-    dk::UniqueMemBlock guide_memblock_;
-    dk::Image guide_image_;
-    dk::ImageDescriptor guide_desc_;
-    void* guide_cpu_ = nullptr;
-    std::vector<uint32_t> guide_pixels_;
-    bool guide_pressed_ = false;
-    bool guide_rasterized_pressed_ = false;
 
     // Always-visible two-dot handle and its optional expanded quick panel.
     // One transparent RGBA texture covers both shapes and costs one overlay
