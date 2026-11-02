@@ -2,6 +2,7 @@ switch/build-switch/
 switch/deps/switch/
 switch/romfs/shaders/*.dksh
 switch/deps/src/
+dist/
 *.elf
 *.map
 *.nacp

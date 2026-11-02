@@ -70,8 +70,18 @@ Application data is stored only under `sdmc:/switch/ZERODROID/`.
 
 ## Build from source
 
-The standard devkitPro Switch toolchain and Switch portlibs are required. The
-WebRTC dependency bundle can be built reproducibly with Docker:
+The easiest way is to build with Docker. The root `Dockerfile` installs the
+devkitPro Switch toolchain and portlibs, builds the WebRTC dependency bundle,
+and produces the NRO:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --output type=local,dest=dist .
+```
+
+The resulting file is `dist/ZERODROID_v<version>.nro`.
+
+For a native build, install the standard devkitPro Switch toolchain and Switch
+portlibs. The WebRTC dependency bundle can be built reproducibly with Docker:
 
 ```bash
 cd switch
@@ -81,7 +91,8 @@ make -j4
 
 The dependency script clones upstream sources, applies the Switch-specific
 patches in `switch/deps/patches/`, and places generated libraries under the
-ignored `switch/deps/switch/` directory.
+ignored `switch/deps/switch/` directory. It also supports `--container`, which
+builds in-place without invoking Docker; the root `Dockerfile` uses that mode.
 
 ## Beta status and feedback
 

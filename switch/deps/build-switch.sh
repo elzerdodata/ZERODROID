@@ -9,20 +9,63 @@
 # Usage (non-interactive):  bash deps/build-switch.sh
 # Requires: docker (devkitpro/devkita64 image), git.
 #
-# Internal: "--inside" is passed when the script re-executes itself inside the
-# devkitpro/devkita64 container.
+# Internal:
+#   --container  clone/patch and build without invoking Docker (used by Dockerfile)
+#   --inside     build only; run inside the devkitpro/devkita64 container
 
 set -euo pipefail
 
 LIBPEER_REPO="https://github.com/sepfy/libpeer"
+# Last upstream commit against which switch/deps/patches/libpeer-switch.patch
+# applies cleanly. Keep this pinned; newer upstream commits change the patched
+# files and make the build fail.
+LIBPEER_COMMIT="9319aa434cb9e893faed0293ba9d2a21eca59c8b"
 DOCKER_IMAGE="devkitpro/devkita64"
+
+DEPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIBPEER_DIR="$DEPS_DIR/src/libpeer"
+
+apply_patch() {
+  local dir="$1" patch="$2"
+  if git -C "$dir" apply --reverse --check "$patch" >/dev/null 2>&1; then
+    echo "patch already applied: $(basename "$patch")"
+  else
+    echo "applying patch: $(basename "$patch")"
+    git -C "$dir" apply "$patch"
+  fi
+}
+
+prepare_sources() {
+  command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
+
+  if [[ ! -e "$LIBPEER_DIR/.git" ]]; then
+    mkdir -p "$DEPS_DIR/src"
+    git clone "$LIBPEER_REPO" "$LIBPEER_DIR"
+  fi
+
+  # Always return to the pinned revision; the dependency tree is generated and
+  # may still contain patches from a previous run.
+  if git -C "$LIBPEER_DIR" rev-parse --is-shallow-repository \
+      | grep -qx true; then
+    git -C "$LIBPEER_DIR" fetch --unshallow --tags
+  fi
+  git -C "$LIBPEER_DIR" fetch --all --tags --quiet
+  git -C "$LIBPEER_DIR" reset --hard "$LIBPEER_COMMIT"
+  git -C "$LIBPEER_DIR" submodule update --init --recursive --force --depth 1
+
+  apply_patch "$LIBPEER_DIR" "$DEPS_DIR/patches/libpeer-switch.patch"
+  apply_patch "$LIBPEER_DIR/third_party/mbedtls" \
+    "$DEPS_DIR/patches/mbedtls-switch.patch"
+  apply_patch "$LIBPEER_DIR/third_party/usrsctp" \
+    "$DEPS_DIR/patches/usrsctp-switch.patch"
+}
 
 # ---------------------------------------------------------------------------
 # Container side: do the actual builds.
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--inside" ]]; then
   export PATH="/opt/devkitpro/portlibs/switch/bin:$PATH"
-  DEPS=/work/deps
+  DEPS="${DEPS:-/work/deps}"
   PREFIX="$DEPS/switch"
   SHIM="$DEPS/shim/include"
   SRC="$DEPS/src/libpeer"
@@ -118,45 +161,33 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# Host side: clone, patch, run container, verify, fix ownership.
+# In-container entry point used by the Dockerfile: no nested Docker.
 # ---------------------------------------------------------------------------
-DEPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIBPEER_DIR="$DEPS_DIR/src/libpeer"
-
-command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
-command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
-
-# 1) Clone (shallow, with submodules) if missing.
-if [[ ! -e "$LIBPEER_DIR/.git" ]]; then
-  mkdir -p "$DEPS_DIR/src"
-  git clone --recursive --depth 1 --shallow-submodules "$LIBPEER_REPO" "$LIBPEER_DIR"
+if [[ "${1:-}" == "--container" ]]; then
+  prepare_sources
+  export DEPS="$DEPS_DIR"
+  exec bash "$0" --inside
 fi
 
-# 2) Apply patches (idempotent: skipped when already applied).
-apply_patch() {
-  local dir="$1" patch="$2"
-  if git -C "$dir" apply --reverse --check "$patch" >/dev/null 2>&1; then
-    echo "patch already applied: $(basename "$patch")"
-  else
-    echo "applying patch: $(basename "$patch")"
-    git -C "$dir" apply "$patch"
-  fi
-}
-apply_patch "$LIBPEER_DIR" "$DEPS_DIR/patches/libpeer-switch.patch"
-apply_patch "$LIBPEER_DIR/third_party/mbedtls" "$DEPS_DIR/patches/mbedtls-switch.patch"
-apply_patch "$LIBPEER_DIR/third_party/usrsctp" "$DEPS_DIR/patches/usrsctp-switch.patch"
+# ---------------------------------------------------------------------------
+# Host side: clone, patch, run container, verify, fix ownership.
+# ---------------------------------------------------------------------------
+command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
 
-# 3) Build everything inside the devkitPro container.
+# 1) Clone (shallow, with submodules) if missing, then apply patches.
+prepare_sources
+
+# 2) Build everything inside the devkitPro container.
 rm -rf "$DEPS_DIR/switch"
 docker run --rm -v "$DEPS_DIR":/work/deps "$DOCKER_IMAGE" \
   bash /work/deps/build-switch.sh --inside
 
-# 4) Fix ownership of files the container may have created as root
+# 3) Fix ownership of files the container may have created as root
 #    (no-op on Docker Desktop for Mac, needed on Linux hosts).
 docker run --rm -v "$DEPS_DIR":/work/deps "$DOCKER_IMAGE" \
   chown -R "$(id -u):$(id -g)" /work/deps/switch /work/deps/src >/dev/null 2>&1 || true
 
-# 5) Verify artifacts.
+# 4) Verify artifacts.
 echo
 echo "=== installed artifacts ==="
 for lib in libpeer.a libsrtp2.a libusrsctp.a libmbedtls.a libmbedcrypto.a libmbedx509.a; do
