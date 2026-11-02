@@ -3,7 +3,7 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.5 provides QR login, a controller-first game library,
+homebrew. Version 0.8.6 provides QR login, a controller-first game library,
 native H.264 video, Opus audio and complete controller input.
 
 > [!IMPORTANT]
@@ -11,7 +11,15 @@ native H.264 video, Opus audio and complete controller input.
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.5
+## New in v0.8.6
+
+- Added Leave Session to the in-game touch settings, returning to the library.
+- Added streaming resolution selection: Automatic, 720p or 1080p.
+- Redesigned home Settings with larger cards, scrolling and no redundant
+  captions.
+- Pushes to `main` now build and publish GitHub releases automatically.
+
+## Included from v0.8.5
 
 - Purple touchpad-style virtual mouse during streaming.
 - Quick tap sends a left click; long press sends a right click.
@@ -67,11 +75,15 @@ not include or install custom firmware.
 ## Controls
 
 - **Minus in the library:** ZERODROID Settings.
+- **Streaming resolution in Settings:** Automatic, 720p or 1080p; applies on
+  the next game launch.
 - **ZL / ZR:** switch between All, Favorites and Recent.
 - **Y in the library:** search using the system keyboard.
 - **X in the library:** add or remove the selected game from Favorites.
 - **R3 in the library:** refresh the Boosteroid library.
 - **Two dots during streaming:** open the touch settings panel.
+- **Leave Session in the stream panel:** stop streaming and return to the
+  library.
 - **Touchpad during streaming:** move the purple virtual mouse. A quick tap
   sends a left click and a long press sends a right click.
 - **Ping in the stream panel:** show or hide the latency badge; it starts off

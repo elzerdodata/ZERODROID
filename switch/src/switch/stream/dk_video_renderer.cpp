@@ -1012,20 +1012,17 @@ void DkVideoRenderer::rasterize_quick_menu() {
             blit_quick_text(value, rr.x + 300, rr.y + 12);
         }
 
-        QuickRect warning_box = local({1180, 636, 468, 84});
-        fill(warning_box.x, warning_box.y, warning_box.w, warning_box.h,
-             rgba(45, 39, 61, 245));
-        frame(warning_box.x, warning_box.y, warning_box.w, warning_box.h, 2,
-              accent);
-        blit_quick_text("SERVER & REGION", warning_box.x + 14,
-                        warning_box.y + 6);
-        blit_quick_text("Configure from library with Minus",
-                        warning_box.x + 14, warning_box.y + 44);
-
         QuickRect reset = local(kQuickResetRect);
         fill(reset.x, reset.y, reset.w, reset.h, surface);
         frame(reset.x, reset.y, reset.w, reset.h, 2, accent);
-        blit_quick_text("RESET IMAGE", reset.x + 55, reset.y + 10);
+        blit_quick_text("RESET IMAGE", reset.x + 150, reset.y + 10);
+
+        QuickRect leave = local(kQuickLeaveRect);
+        fill(leave.x, leave.y, leave.w, leave.h,
+             rgba(64, 30, 52, 245));
+        frame(leave.x, leave.y, leave.w, leave.h, 2,
+              rgba(248, 113, 113, 255));
+        blit_quick_text("LEAVE SESSION", leave.x + 140, leave.y + 10);
     }
 
     if (quick_cpu_)

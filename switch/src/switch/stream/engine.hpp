@@ -70,6 +70,8 @@ public:
     void set_quick_menu_state(const QuickMenuState& state) {
         dkVideo_.set_quick_menu_state(state);
     }
+    // 0 = automatic (current Switch output), 1 = 720p, 2 = 1080p.
+    void set_stream_resolution(int mode);
     int ping_ms() const { return pingMs_.load(); }
 
     struct RumbleCommand {
@@ -155,6 +157,7 @@ private:
     std::atomic<bool> xboxFaceLayout_{false};
     std::atomic<bool> guidePressed_{false};
     std::atomic<int> pingMs_{-1};
+    int streamResolution_{0};
     float mouseX_{0.5f};
     float mouseY_{0.5f};
     bool mouseVisible_{false};

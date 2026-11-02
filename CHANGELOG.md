@@ -1,5 +1,14 @@
 # ZERODROID changelog
 
+## v0.8.6 - Streaming settings and release automation
+
+- Added Leave Session to the in-game touch settings.
+- Added streaming resolution selection: Automatic, 720p or 1080p, with matching
+  bitrate requests to Boosteroid.
+- Redesigned home Settings with larger cards, automatic scrolling and no
+  redundant captions.
+- Added GitHub Actions to build and publish a release on every push to main.
+
 ## v0.8.5 - Virtual mouse
 
 - Added a purple touchpad-style virtual mouse during streaming.

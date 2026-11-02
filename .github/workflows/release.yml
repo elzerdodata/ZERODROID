@@ -1,0 +1,68 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read app version
+        id: version
+        run: |
+          version="$(sed -n 's/^APP_VERSION[[:space:]]*:=[[:space:]]*//p' switch/Makefile | head -n1 | tr -d '[:space:]')"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build NRO
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          outputs: type=local,dest=dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify artifact
+        run: |
+          test -s dist/ZERODROID.nro
+          ls -lh dist/ZERODROID.nro
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Same version pushed again: refresh the asset instead of failing.
+            gh release upload "$TAG" dist/ZERODROID.nro --clobber
+          elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            gh release create "$TAG" dist/ZERODROID.nro \
+              --title "ZERODROID $TAG" \
+              --generate-notes \
+              --verify-tag
+          else
+            gh release create "$TAG" dist/ZERODROID.nro \
+              --title "ZERODROID $TAG" \
+              --generate-notes \
+              --target "$GITHUB_SHA"
+          fi

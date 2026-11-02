@@ -30,6 +30,9 @@ script with `--container`, which builds in-place without nested Docker.
   only applies to that revision. Regenerate the patches before bumping the pin.
 - Output is `switch/ZERODROID.nro`; `APP_VERSION` and `TARGET` are set in
   `switch/Makefile`. Keep the README/CHANGELOG in sync on releases.
+- `.github/workflows/release.yml` builds and publishes a GitHub release on every
+  push to `main`. Bump `APP_VERSION` for a new tag; with the same version it
+  refreshes the existing release asset.
 - `make all` also compiles `switch/shaders/*.glsl` with `uam` into ignored
   `switch/romfs/shaders/*.dksh`. Use `make shaders` for shader-only changes.
 - The Makefile only adds `src/switch/stream` when `deps/switch/lib/libpeer.a`

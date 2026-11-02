@@ -42,7 +42,8 @@ inline constexpr QuickRect quick_plus_rect(int row) {
     return {1584, r.y, 64, r.h};
 }
 
-inline constexpr QuickRect kQuickResetRect{1280, 736, 268, 54};
+inline constexpr QuickRect kQuickResetRect{1180, 660, 468, 54};
+inline constexpr QuickRect kQuickLeaveRect{1180, 730, 468, 54};
 
 enum QuickRow {
     QuickPerformance = 0,

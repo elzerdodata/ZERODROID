@@ -31,6 +31,27 @@ namespace {
 gnx::stream::Engine* g_active_engine = nullptr;
 bool g_peer_initialized = false;
 
+void stream_dimensions(int mode, int& width, int& height) {
+    if (mode == 1) {
+        width = 1280;
+        height = 720;
+    } else if (mode == 2) {
+        width = 1920;
+        height = 1080;
+    } else {
+        const bool docked =
+            appletGetOperationMode() == AppletOperationMode_Console;
+        width = docked ? 1920 : 1280;
+        height = docked ? 1080 : 720;
+    }
+}
+
+int stream_bitrate(int width) {
+    // Match the resolution requested from the gateway; the service uses
+    // bitrate_max as the encoder ceiling for this session.
+    return width >= 1920 ? 25000000 : 12000000;
+}
+
 void av_log_capture(void*, int level, const char* format, va_list args) {
     if (level > AV_LOG_WARNING || !g_active_engine) return;
     char message[320]{};
@@ -345,6 +366,10 @@ void Engine::global_shutdown() {
     if (!g_peer_initialized) return;
     g_peer_initialized = false;
     peer_deinit();
+}
+
+void Engine::set_stream_resolution(int mode) {
+    streamResolution_ = std::clamp(mode, 0, 2);
 }
 
 void Engine::start(int appId, const std::string& preferredGateway) {
@@ -686,13 +711,20 @@ bool Engine::connect_gateway(const ZERODROID::StreamSessionConfig& config) {
     }
 
     gatewayApiBase_ = "https://" + without_port(gatewayHost_) + "/webrtc";
-    // Exact Android TV control route and device identity.  1280x720 matches
-    // the Switch handheld output while retaining the official native suffix.
+    // Exact Android TV control route and device identity. x/y select the
+    // requested stream resolution; Automatic follows the current Switch output
+    // mode (720p handheld, 1080p docked).
+    int streamWidth = 1280;
+    int streamHeight = 720;
+    stream_dimensions(streamResolution_, streamWidth, streamHeight);
     const std::string path = "/native?" + query +
-        "&x=1280&y=720&lang=es&tv=1&clientType=native&devType=tv&os=atv";
+        "&x=" + std::to_string(streamWidth) +
+        "&y=" + std::to_string(streamHeight) +
+        "&lang=es&tv=1&clientType=native&devType=tv&os=atv";
     std::string error;
     log("gateway=" + gatewayHost_ + " queryLength=" +
-        std::to_string(query.size()) + " controlPath=/native device=tv");
+        std::to_string(query.size()) + " controlPath=/native device=tv requested=" +
+        std::to_string(streamWidth) + "x" + std::to_string(streamHeight));
     if (!control_.connect(gatewayHost_, path, "romfs:/cacert.pem", error)) {
         fail(error.empty() ? "No se pudo abrir el canal de control." : error);
         return false;
@@ -1240,12 +1272,16 @@ void Engine::handle_control_message(const std::string& raw) {
     }
 
     if (type == "stream" && action == "getstatus") {
+        int streamWidth = 1280;
+        int streamHeight = 720;
+        stream_dimensions(streamResolution_, streamWidth, streamHeight);
         send_control_json(nlohmann::json({
             {"type", "stream"}, {"action", "status"}, {"value", "ok"},
             {"params", {
                 {"type", "androidTV"}, {"ver", "v.2.5.10.tv"},
                 {"gpu", "Tegra X1"}, {"proto", 2}, {"codec", "h264"},
-                {"framerate_max", 60}, {"bitrate_max", 0},
+                {"framerate_max", 60},
+                {"bitrate_max", stream_bitrate(streamWidth)},
                 {"hdr", false}}}}).dump());
         return;
     }

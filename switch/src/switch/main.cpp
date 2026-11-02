@@ -103,6 +103,7 @@ struct ServerSettings {
     std::string preferredLocationLabel{"Automatico"};
     bool xboxFaceLayout{false};
     int language{0};  // 0 = Espanol, 1 = English
+    int resolution{0};  // 0 = automatic, 1 = 720p, 2 = 1080p
     std::vector<int> favoriteGameIds;
     std::vector<int> recentGameIds;
 };
@@ -128,6 +129,7 @@ ServerSettings load_server_settings() {
             "preferredLocationLabel", std::string("Automatico"));
         settings.xboxFaceLayout = value.value("xboxFaceLayout", false);
         settings.language = std::clamp(value.value("language", 0), 0, 1);
+        settings.resolution = std::clamp(value.value("resolution", 0), 0, 2);
         settings.favoriteGameIds = value.value(
             "favoriteGameIds", std::vector<int>{});
         settings.recentGameIds = value.value(
@@ -143,12 +145,13 @@ bool save_server_settings(const ServerSettings& settings) {
     std::ofstream file("sdmc:/switch/ZERODROID/settings.json");
     if (!file.is_open()) return false;
     file << nlohmann::json({
-        {"version", 4},
+        {"version", 5},
         {"allowDistantRegions", settings.allowDistantRegions},
         {"preferredLocationId", settings.preferredLocationId},
         {"preferredLocationLabel", settings.preferredLocationLabel},
         {"xboxFaceLayout", settings.xboxFaceLayout},
         {"language", settings.language},
+        {"resolution", settings.resolution},
         {"favoriteGameIds", settings.favoriteGameIds},
         {"recentGameIds", settings.recentGameIds},
     }).dump(2);
@@ -226,12 +229,22 @@ constexpr uint64_t kVirtualMouseLongPressMs = 550;
 constexpr uint64_t kVirtualMouseHideMs = 10000;
 constexpr int kVirtualMouseMoveThreshold = 24;
 
+constexpr int kSettingsCardX = 480;
+constexpr int kSettingsCardW = 960;
+constexpr int kSettingsCardH = 170;
+constexpr int kSettingsCardGap = 28;
+constexpr int kSettingsViewTop = 205;
+constexpr int kSettingsViewBottom = 890;
+constexpr int kSettingsRowCount = 6;
+
 // Touch controller for the in-stream two-dot menu. Returns true when the tap
 // belongs to the panel. A tap outside closes it and remains available to the
 // independent Guide/Home target.
 bool handle_stream_settings_touch(gnx::stream::QuickMenuState& state,
-                                  int x, int y, bool& layoutChanged) {
+                                  int x, int y, bool& layoutChanged,
+                                  bool& leaveRequested) {
     layoutChanged = false;
+    leaveRequested = false;
     if (point_in_rect(x, y, gnx::stream::kQuickToggleRect)) {
         state.open = !state.open;
         return true;
@@ -265,6 +278,10 @@ bool handle_stream_settings_touch(gnx::stream::QuickMenuState& state,
         state.saturation = 100;
         state.gamma = 100;
         state.sharpness = 0;
+        changed = true;
+    } else if (point_in_rect(x, y, gnx::stream::kQuickLeaveRect)) {
+        state.open = false;
+        leaveRequested = true;
         changed = true;
     } else {
         for (int row = gnx::stream::QuickBrightness;
@@ -429,7 +446,8 @@ int main(int argc, char* argv[]) {
     std::vector<ZERODROID::ServerLocation> serverLocations;
     std::string serverConfigError;
     std::size_t selectedLocation = 0;  // 0 = automatic
-    int selectedSettingsRow = 0;       // regions, controller, location, language, logout
+    int selectedSettingsRow = 0;       // regions, controller, location, resolution, language, logout
+    int settingsScroll = 0;
     bool serverSaveInFlight = false;
     std::future<AsyncServerSaveResult> serverSaveFuture;
     bool launchPanel = false;
@@ -581,6 +599,7 @@ int main(int argc, char* argv[]) {
         const u64 kHeld = padGetButtons(&pad);
 
         if (dekoStreaming) {
+            bool leaveFromMenu = false;
             HidTouchScreenState touchState{};
             const bool touching =
                 hidGetTouchScreenStates(&touchState, 1) > 0 &&
@@ -634,7 +653,7 @@ int main(int argc, char* argv[]) {
                         const bool quickTouch =
                             handle_stream_settings_touch(
                                 quickMenuState, touchLastX, touchLastY,
-                                layoutChanged);
+                                layoutChanged, leaveFromMenu);
                         if (quickTouch || wasOpen != quickMenuState.open) {
                             stream->set_quick_menu_state(quickMenuState);
                         }
@@ -668,7 +687,8 @@ int main(int argc, char* argv[]) {
             stream->set_guide_button_pressed(guidePressed);
             const u64 exitMask =
                 HidNpadButton_L | HidNpadButton_R | HidNpadButton_Minus;
-            const bool leaveStream = (kHeld & exitMask) == exitMask;
+            const bool leaveStream =
+                leaveFromMenu || (kHeld & exitMask) == exitMask;
             stream->send_gamepad(
                 padGetStickPos(&pad, 0), padGetStickPos(&pad, 1), kHeld);
             stream->pump_video();
@@ -887,7 +907,22 @@ int main(int argc, char* argv[]) {
                 selectedSettingsRow = std::max(0, selectedSettingsRow - 1);
             }
             if (kDown & HidNpadButton_Down) {
-                selectedSettingsRow = std::min(4, selectedSettingsRow + 1);
+                selectedSettingsRow = std::min(5, selectedSettingsRow + 1);
+            }
+            {
+                constexpr int stride = kSettingsCardH + kSettingsCardGap;
+                constexpr int contentH =
+                    kSettingsRowCount * kSettingsCardH +
+                    (kSettingsRowCount - 1) * kSettingsCardGap;
+                constexpr int viewH = kSettingsViewBottom - kSettingsViewTop;
+                constexpr int maxScroll = contentH > viewH ? contentH - viewH : 0;
+                const int rowTop = selectedSettingsRow * stride;
+                const int rowBottom = rowTop + kSettingsCardH;
+                if (rowTop < settingsScroll) settingsScroll = rowTop;
+                if (rowBottom > settingsScroll + viewH) {
+                    settingsScroll = rowBottom - viewH;
+                }
+                settingsScroll = std::clamp(settingsScroll, 0, maxScroll);
             }
             if (selectedSettingsRow == 0 && serverConfigReady &&
                 (kDown & (HidNpadButton_Left | HidNpadButton_Right |
@@ -938,12 +973,30 @@ int main(int argc, char* argv[]) {
             if (selectedSettingsRow == 3 &&
                 (kDown & (HidNpadButton_Left | HidNpadButton_Right |
                           HidNpadButton_A))) {
+                const int direction =
+                    (kDown & HidNpadButton_Left) ? -1 : 1;
+                serverSettings.resolution =
+                    (serverSettings.resolution + direction + 3) % 3;
+                save_server_settings(serverSettings);
+                libraryNotice =
+                    serverSettings.resolution == 1
+                        ? ui("Resolucion de streaming: 720p.",
+                             "Streaming resolution: 720p.")
+                        : serverSettings.resolution == 2
+                              ? ui("Resolucion de streaming: 1080p.",
+                                   "Streaming resolution: 1080p.")
+                              : ui("Resolucion de streaming: Auto.",
+                                   "Streaming resolution: Auto.");
+            }
+            if (selectedSettingsRow == 4 &&
+                (kDown & (HidNpadButton_Left | HidNpadButton_Right |
+                          HidNpadButton_A))) {
                 serverSettings.language = serverSettings.language == 0 ? 1 : 0;
                 save_server_settings(serverSettings);
                 libraryNotice = ui("Idioma cambiado a Espanol.",
                                    "Language changed to English.");
             }
-            if (selectedSettingsRow == 4 && (kDown & HidNpadButton_A)) {
+            if (selectedSettingsRow == 5 && (kDown & HidNpadButton_A)) {
                 logout();
             }
             if (kDown & HidNpadButton_B) settingsOpen = false;
@@ -951,6 +1004,7 @@ int main(int argc, char* argv[]) {
                    (kDown & HidNpadButton_Minus)) {
             settingsOpen = true;
             selectedSettingsRow = 0;
+            settingsScroll = 0;
             if (!serverConfigReady && !serverConfigInFlight) {
                 startServerConfigLoad();
             }
@@ -1029,6 +1083,7 @@ int main(int argc, char* argv[]) {
                 quickMenuState.xboxFaceLayout =
                     serverSettings.xboxFaceLayout;
                 stream->set_xbox_face_layout(serverSettings.xboxFaceLayout);
+                stream->set_stream_resolution(serverSettings.resolution);
                 stream->set_quick_menu_state(quickMenuState);
                 stream->start(game.id);
             }
@@ -1068,80 +1123,91 @@ int main(int argc, char* argv[]) {
             draw_qr_code(gfx.renderer(), 1220, 280, 440, authArtifact.qrUrl);
         } else {
             if (settingsOpen) {
-                SDL_Rect cardRect = {160, 125, 1600, 840};
-                gfx.fill(cardRect, gnx::gfx::kSurface);
-                gfx.frame(cardRect, gnx::gfx::kChipEdge, 2);
+                SDL_Rect settingsCard = {400, 100, 1120, 880};
+                gfx.fill(settingsCard, gnx::gfx::kSurface);
+                gfx.frame(settingsCard, gnx::gfx::kChipEdge, 2);
                 gfx.text(ui("CONFIGURACION DE ZERODROID", "ZERODROID SETTINGS"),
-                         220, 155,
+                         440, 130,
                          gnx::gfx::FontSize::Title, gnx::gfx::kText);
 
-                SDL_Rect distantRow = {205, 205, 1510, 100};
-                gfx.fill(distantRow, selectedSettingsRow == 0
-                    ? gnx::gfx::kSurfaceHi : gnx::gfx::kChip);
-                gfx.frame(distantRow, selectedSettingsRow == 0
-                    ? gnx::gfx::kFocus : gnx::gfx::kChipEdge,
-                    selectedSettingsRow == 0 ? 3 : 1);
+                constexpr int stride = kSettingsCardH + kSettingsCardGap;
+                constexpr int contentH =
+                    kSettingsRowCount * kSettingsCardH +
+                    (kSettingsRowCount - 1) * kSettingsCardGap;
+                constexpr int viewH = kSettingsViewBottom - kSettingsViewTop;
+                constexpr int maxScroll = contentH > viewH ? contentH - viewH : 0;
+                settingsScroll = std::clamp(settingsScroll, 0, maxScroll);
+
+                auto settingsRow = [&](int row) {
+                    return SDL_Rect{kSettingsCardX,
+                                    kSettingsViewTop + row * stride -
+                                        settingsScroll,
+                                    kSettingsCardW, kSettingsCardH};
+                };
+                auto drawCard = [&](int row, bool danger = false) {
+                    SDL_Rect r = settingsRow(row);
+                    const bool selected = selectedSettingsRow == row;
+                    gfx.fill(r, selected
+                        ? (danger ? gnx::gfx::Color{72, 32, 48}
+                                  : gnx::gfx::kSurfaceHi)
+                        : gnx::gfx::kChip);
+                    gfx.frame(r, selected
+                        ? (danger ? gnx::gfx::kError : gnx::gfx::kFocus)
+                        : gnx::gfx::kChipEdge,
+                        selected ? 3 : 1);
+                    return r;
+                };
+
+                SDL_Rect contentClip = {kSettingsCardX, kSettingsViewTop,
+                                        kSettingsCardW, viewH};
+                SDL_RenderSetClipRect(gfx.renderer(), &contentClip);
+
+                SDL_Rect distantRow = drawCard(0);
                 gfx.text(ui("Permitir conexion a regiones lejanas",
                             "Allow connections to distant regions"),
-                         245, 218, gnx::gfx::FontSize::Body, gnx::gfx::kText);
-                gfx.text(ui("Ofrece mas maquinas, con posible aumento de latencia.",
-                            "Finds more machines, potentially with higher latency."),
-                         245, 266, gnx::gfx::FontSize::Small,
-                         gnx::gfx::kTextDim);
-                SDL_Rect toggleTrack = {1550, 232, 100, 46};
+                         distantRow.x + 40, distantRow.y + 64,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                SDL_Rect toggleTrack = {
+                    distantRow.x + distantRow.w - 150, distantRow.y + 61,
+                    100, 46};
                 gfx.fill(toggleTrack, serverSettings.allowDistantRegions
                     ? gnx::gfx::Color{16, 150, 95}
                     : gnx::gfx::Color{70, 74, 88});
                 SDL_Rect toggleKnob = {
-                    serverSettings.allowDistantRegions ? 1608 : 1556,
-                    238, 34, 34};
+                    toggleTrack.x +
+                        (serverSettings.allowDistantRegions ? 58 : 6),
+                    toggleTrack.y + 6, 34, 34};
                 gfx.fill(toggleKnob, gnx::gfx::kText);
 
-                SDL_Rect controllerRow = {205, 320, 1510, 100};
-                gfx.fill(controllerRow, selectedSettingsRow == 1
-                    ? gnx::gfx::kSurfaceHi : gnx::gfx::kChip);
-                gfx.frame(controllerRow, selectedSettingsRow == 1
-                    ? gnx::gfx::kFocus : gnx::gfx::kChipEdge,
-                    selectedSettingsRow == 1 ? 3 : 1);
+                SDL_Rect controllerRow = drawCard(1);
                 gfx.text(ui("Disposicion de botones A / B / X / Y",
                             "A / B / X / Y button layout"),
-                         245, 333,
+                         controllerRow.x + 40, controllerRow.y + 70,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);
-                gfx.text(serverSettings.xboxFaceLayout
-                             ? ui("Xbox: coincide con la posicion fisica del mando Xbox.",
-                                  "Xbox: matches the physical Xbox controller layout.")
-                             : ui("Nintendo: conserva las letras impresas en la Switch.",
-                                  "Nintendo: keeps the letters printed on the Switch."),
-                         245, 381,
-                         gnx::gfx::FontSize::Small, gnx::gfx::kTextDim);
-                SDL_Rect layoutChip = {1390, 340, 260, 60};
+                SDL_Rect layoutChip = {
+                    controllerRow.x + controllerRow.w - 330,
+                    controllerRow.y + 52, 260, 64};
                 gfx.fill(layoutChip, serverSettings.xboxFaceLayout
                     ? gnx::gfx::Color{16, 110, 80} : gnx::gfx::kBar);
                 gfx.frame(layoutChip, gnx::gfx::kFocus, 2);
                 gfx.text_centered(serverSettings.xboxFaceLayout ? "XBOX" : "NINTENDO",
                                   layoutChip.x + layoutChip.w / 2,
-                                  layoutChip.y + 16,
+                                  layoutChip.y + 18,
                                   gnx::gfx::FontSize::Small,
                                   gnx::gfx::kText);
 
-                SDL_Rect locationRow = {205, 435, 1510, 155};
-                gfx.fill(locationRow, selectedSettingsRow == 2
-                    ? gnx::gfx::kSurfaceHi : gnx::gfx::kChip);
-                gfx.frame(locationRow, selectedSettingsRow == 2
-                    ? gnx::gfx::kFocus : gnx::gfx::kChipEdge,
-                    selectedSettingsRow == 2 ? 3 : 1);
+                SDL_Rect locationRow = drawCard(2);
                 gfx.text(ui("Ubicacion de servidor preferida",
                             "Preferred server location"),
-                         245, 446,
+                         locationRow.x + 40, locationRow.y + 26,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);
-                gfx.text(ui("Se aplicara en el proximo inicio del juego.",
-                            "Applies the next time a game starts."),
-                         245, 488,
-                         gnx::gfx::FontSize::Small, gnx::gfx::kTextDim);
-                gfx.text(ui("(Y) ACTUALIZAR", "(Y) REFRESH"), 1425, 449,
+                gfx.text(ui("(Y) ACTUALIZAR", "(Y) REFRESH"),
+                         locationRow.x + locationRow.w - 190,
+                         locationRow.y + 26,
                          gnx::gfx::FontSize::Small, gnx::gfx::kFocus);
 
-                SDL_Rect locationSelect = {245, 520, 650, 55};
+                SDL_Rect locationSelect = {
+                    locationRow.x + 40, locationRow.y + 88, 700, 55};
                 gfx.fill(locationSelect, gnx::gfx::kBar);
                 gfx.frame(locationSelect, gnx::gfx::kChipEdge, 2);
                 std::string locationLabel = ui("Automatico (recomendado)",
@@ -1154,67 +1220,87 @@ int main(int argc, char* argv[]) {
                         locationLabel += " (" + location.country + ")";
                     }
                 }
-                gfx.text("<", 275, 526, gnx::gfx::FontSize::Body,
-                         gnx::gfx::kFocus);
-                gfx.text(fit_text(gfx, locationLabel, 500), 335, 526,
+                gfx.text("<", locationSelect.x + 30, locationSelect.y + 6,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kFocus);
+                gfx.text(fit_text(gfx, locationLabel, 560),
+                         locationSelect.x + 90, locationSelect.y + 6,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);
-                gfx.text(">", 845, 526, gnx::gfx::FontSize::Body,
-                         gnx::gfx::kFocus);
+                gfx.text(">", locationSelect.x + locationSelect.w - 45,
+                         locationSelect.y + 6,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kFocus);
 
-                SDL_Rect languageRow = {205, 605, 1510, 100};
-                gfx.fill(languageRow, selectedSettingsRow == 3
-                    ? gnx::gfx::kSurfaceHi : gnx::gfx::kChip);
-                gfx.frame(languageRow, selectedSettingsRow == 3
-                    ? gnx::gfx::kFocus : gnx::gfx::kChipEdge,
-                    selectedSettingsRow == 3 ? 3 : 1);
+                SDL_Rect resolutionRow = drawCard(3);
+                gfx.text(ui("Resolucion de streaming", "Streaming resolution"),
+                         resolutionRow.x + 40, resolutionRow.y + 70,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                SDL_Rect resolutionChip = {
+                    resolutionRow.x + resolutionRow.w - 330,
+                    resolutionRow.y + 52, 260, 64};
+                gfx.fill(resolutionChip, gnx::gfx::kBar);
+                gfx.frame(resolutionChip, gnx::gfx::kFocus, 2);
+                gfx.text_centered(serverSettings.resolution == 1
+                                      ? "720p"
+                                      : serverSettings.resolution == 2
+                                            ? "1080p" : "AUTO",
+                                  resolutionChip.x + resolutionChip.w / 2,
+                                  resolutionChip.y + 18,
+                                  gnx::gfx::FontSize::Small,
+                                  gnx::gfx::kText);
+
+                SDL_Rect languageRow = drawCard(4);
                 gfx.text(ui("Idioma de la interfaz", "Interface language"),
-                         245, 618, gnx::gfx::FontSize::Body, gnx::gfx::kText);
-                gfx.text(ui("Cambia inmediatamente y se guarda para el proximo inicio.",
-                            "Changes immediately and is saved for the next launch."),
-                         245, 666, gnx::gfx::FontSize::Small,
-                         gnx::gfx::kTextDim);
-                SDL_Rect languageChip = {1390, 625, 260, 60};
+                         languageRow.x + 40, languageRow.y + 70,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                SDL_Rect languageChip = {
+                    languageRow.x + languageRow.w - 330,
+                    languageRow.y + 52, 260, 64};
                 gfx.fill(languageChip, gnx::gfx::kBar);
                 gfx.frame(languageChip, gnx::gfx::kFocus, 2);
                 gfx.text_centered(serverSettings.language == 1
                                       ? "ENGLISH" : "ESPANOL",
                                   languageChip.x + languageChip.w / 2,
-                                  languageChip.y + 16,
+                                  languageChip.y + 18,
                                   gnx::gfx::FontSize::Small,
                                   gnx::gfx::kText);
 
-                SDL_Rect logoutRow = {205, 720, 1510, 90};
-                gfx.fill(logoutRow, selectedSettingsRow == 4
-                    ? gnx::gfx::Color{72, 32, 48} : gnx::gfx::kChip);
-                gfx.frame(logoutRow, selectedSettingsRow == 4
-                    ? gnx::gfx::kError : gnx::gfx::kChipEdge,
-                    selectedSettingsRow == 4 ? 3 : 1);
-                gfx.text(ui("Cerrar sesion", "Sign out"), 245, 733,
+                SDL_Rect logoutRow = drawCard(5, true);
+                gfx.text(ui("Cerrar sesion", "Sign out"),
+                         logoutRow.x + 40, logoutRow.y + 70,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);
-                gfx.text(ui("Tus favoritos y recientes permanecen guardados en la consola.",
-                            "Favorites and recent games remain saved on this console."),
-                         245, 778, gnx::gfx::FontSize::Small,
-                         gnx::gfx::kTextDim);
-                gfx.text("(A)", 1570, 742, gnx::gfx::FontSize::Body,
-                         gnx::gfx::kError);
+                gfx.text("(A)", logoutRow.x + logoutRow.w - 160,
+                         logoutRow.y + 70,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kError);
+
+                SDL_RenderSetClipRect(gfx.renderer(), nullptr);
+
+                if (maxScroll > 0) {
+                    SDL_Rect track = {settingsCard.x + settingsCard.w - 30,
+                                      kSettingsViewTop, 8, viewH};
+                    gfx.fill(track, gnx::gfx::kChipEdge);
+                    const int thumbH = std::max(48, viewH * viewH / contentH);
+                    const int thumbY = kSettingsViewTop +
+                        (viewH - thumbH) * settingsScroll / maxScroll;
+                    SDL_Rect thumb = {track.x, thumbY, track.w, thumbH};
+                    gfx.fill(thumb, gnx::gfx::kFocus);
+                }
 
                 if (serverConfigInFlight) {
                     gfx.text(ui("Cargando ubicaciones oficiales de Boosteroid...",
                                 "Loading official Boosteroid locations..."),
-                             220, 850, gnx::gfx::FontSize::Small,
+                             440, 925, gnx::gfx::FontSize::Small,
                              gnx::gfx::kWarn);
                 } else if (serverSaveInFlight) {
                     gfx.text(ui("Guardando en tu cuenta de Boosteroid...",
                                 "Saving to your Boosteroid account..."),
-                             220, 850, gnx::gfx::FontSize::Small,
+                             440, 925, gnx::gfx::FontSize::Small,
                              gnx::gfx::kWarn);
                 } else if (!serverConfigError.empty()) {
-                    gfx.text(fit_text(gfx, serverConfigError, 1450), 220, 850,
+                    gfx.text(fit_text(gfx, serverConfigError, 1000), 440, 925,
                              gnx::gfx::FontSize::Small, gnx::gfx::kError);
                 } else {
                     gfx.text(ui("Izquierda/derecha cambia; (A) selecciona o guarda.",
                                 "Left/right changes; (A) selects or saves."),
-                             220, 850, gnx::gfx::FontSize::Small,
+                             440, 925, gnx::gfx::FontSize::Small,
                              gnx::gfx::kTextDim);
                 }
             } else if (launchPanel) {
