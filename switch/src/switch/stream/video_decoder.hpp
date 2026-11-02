@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "video_codec.hpp"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
@@ -12,14 +14,16 @@ extern "C" {
 
 namespace gnx::stream {
 
-// H.264 decoder: NVDEC (nvtegra hwaccel) on Switch, software elsewhere.
-// Input: complete Annex-B access units from the RTP depacketizer.
+// H.265/HEVC decoder: NVDEC (nvtegra hwaccel) on Switch, software elsewhere.
+// H.264 is still supported by the same class for fallback/testing.
+// Input: complete Annex-B access units from the RTP depacketizer (or from the
+// native UDP transport, which already delivers whole access units).
 // Output: a tightly-packed I420 SDL texture (SDL_PIXELFORMAT_IYUV). We convert
 // NV12/YUV420P to packed I420 ourselves rather than trust SDL's NV12 path or
 // pass padded strides -- both produce green/pink corruption on the Switch port.
 class VideoDecoder {
 public:
-    bool init(SDL_Renderer* renderer);
+    bool init(SDL_Renderer* renderer, VideoCodec codec);
     void shutdown();
 
     // Feed one access unit; returns true if a new frame was rendered into
@@ -34,7 +38,8 @@ public:
         return e;
     }
 
-    // True while the decoder is discarding predictive frames until a new IDR.
+    // True while the decoder is discarding predictive frames until a new IRAP
+    // (H.264 IDR / HEVC IDR or CRA).
     bool waiting_keyframe() const { return waiting_keyframe_; }
 
     SDL_Texture* texture() { return texture_; }
@@ -62,6 +67,7 @@ private:
     AVFrame* frame_ = nullptr;
     AVFrame* held_frame_ = nullptr;  // Switch: surviving ref of the last frame
     AVPacket* packet_ = nullptr;
+    VideoCodec codec_ = VideoCodec::H265;
     bool error_ = false;
     bool waiting_keyframe_ = false;
     uint64_t waiting_since_ms_ = 0;

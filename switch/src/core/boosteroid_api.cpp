@@ -1238,7 +1238,7 @@ bool BoosteroidAPI::tryResumeLastSession(
     resumed.signedQuery = std::move(signedQuery);
     resumed.accessToken = m_authToken;
     resumed.authDataToken = m_userDataToken;
-    resumed.preferredCodec = "h264";
+    resumed.preferredCodec = "h265";
     outConfig = std::move(resumed);
     m_lastSession.usedAt = now_seconds();
     saveLastSessionToSD();
@@ -1540,7 +1540,7 @@ bool BoosteroidAPI::startStreamingSessionImpl(
         outConfig.sessionQueries = std::move(queries);
         outConfig.accessToken = m_authToken;
         outConfig.authDataToken = m_userDataToken;
-        outConfig.preferredCodec = "h264";
+        outConfig.preferredCodec = "h265";
         if (outConfig.signedQuery.empty()) {
             m_lastError = gnx::i18n::tr("La maquina esta lista, pero falta la firma del gateway.", "The machine is ready, but the gateway signature is missing.");
             return false;

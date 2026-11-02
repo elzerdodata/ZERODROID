@@ -56,10 +56,19 @@ bool parse_rtp(const uint8_t* rtp, size_t len, uint16_t* seq, uint32_t* ts,
     return true;
 }
 
-uint8_t nal_type(const uint8_t* p, size_t len) { return len ? (p[0] & 0x1f) : 0; }
+uint8_t nal_type(const uint8_t* p, size_t len, VideoCodec codec) {
+    return nal_unit_type(p, len, codec);
+}
 
-bool is_partition_head(const uint8_t* p, size_t len) {
-    uint8_t t = nal_type(p, len);
+bool is_partition_head(const uint8_t* p, size_t len, VideoCodec codec) {
+    uint8_t t = nal_type(p, len, codec);
+    if (codec == VideoCodec::H265) {
+        // RFC 7798: 0..47 single NAL unit, 48 aggregation packet, 49 FU.
+        // An aggregation packet carries whole NAL units, so it always starts
+        // a new access unit; only a FU depends on its start bit.
+        if (t == kHevcNalFu) return len > 2 && (p[2] & 0x80) != 0;  // FU start
+        return t <= kHevcNalAp;
+    }
     if (t == 28) return len > 1 && (p[1] & 0x80) != 0;  // FU-A start
     return t >= 1 && t <= 24;                            // single NALU or STAP-A
 }
@@ -68,9 +77,48 @@ void append(std::vector<uint8_t>& au, const uint8_t* d, size_t n) {
     au.insert(au.end(), d, d + n);
 }
 
-void depacketize(const uint8_t* p, size_t len, std::vector<uint8_t>& au) {
+// RFC 7798: single NAL unit (types 0..47), aggregation packet (48) and
+// fragmentation unit (49). The HEVC NAL header is two bytes, so a fragmented
+// unit must be re-prefixed with the reconstructed header on its first fragment.
+void depacketize_hevc(const uint8_t* p, size_t len, std::vector<uint8_t>& au) {
+    if (len < 2) return;
+    const uint8_t t = static_cast<uint8_t>((p[0] >> 1) & 0x3f);
+    if (t < kHevcNalAp) {
+        append(au, kStartCode, 4);
+        append(au, p, len);
+    } else if (t == kHevcNalAp) {  // AP: [2-byte header][len16|NAL]*
+        size_t i = 2;
+        while (i + 2 <= len) {
+            size_t n = (p[i] << 8) | p[i + 1];
+            i += 2;
+            if (!n || i + n > len) break;
+            append(au, kStartCode, 4);
+            append(au, p + i, n);
+            i += n;
+        }
+    } else if (t == kHevcNalFu) {  // FU: [2-byte payload hdr][FU hdr][data]
+        if (len < 3) return;
+        const uint8_t fu_header = p[2];
+        if (fu_header & 0x80) {  // start of a fragmented NAL unit
+            append(au, kStartCode, 4);
+            const uint8_t type = static_cast<uint8_t>(fu_header & 0x3f);
+            // F bit and the LayerId/TID bits survive from the payload header;
+            // only the type field comes from the FU header.
+            au.push_back(static_cast<uint8_t>((p[0] & 0x81) | (type << 1)));
+            au.push_back(p[1]);
+        }
+        append(au, p + 3, len - 3);
+    }
+}
+
+void depacketize(const uint8_t* p, size_t len, std::vector<uint8_t>& au,
+                 VideoCodec codec) {
     if (!len) return;
-    uint8_t t = nal_type(p, len);
+    if (codec == VideoCodec::H265) {
+        depacketize_hevc(p, len, au);
+        return;
+    }
+    uint8_t t = nal_type(p, len, codec);
     if (t >= 1 && t <= 23) {
         append(au, kStartCode, 4);
         append(au, p, len);
@@ -94,18 +142,15 @@ void depacketize(const uint8_t* p, size_t len, std::vector<uint8_t>& au) {
     }
 }
 
-bool has_keyframe(const std::vector<uint8_t>& au) {
-    // IDR slices ONLY (NAL type 5). xCloud repeats SPS/PPS in-band without an
-    // IDR, and accepting a bare SPS here resumed decode on P-frames whose
-    // references were never decoded -- the decoder concealed them from
-    // uninitialized surfaces, producing the self-sustaining green/pixelated
-    // garbage. Only a real IDR rebuilds the reference chain (green-vita gates
-    // on has_idr for exactly this reason).
-    for (size_t i = 0; i + 4 < au.size(); ++i)
-        if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 0 && au[i + 3] == 1) {
-            if ((au[i + 4] & 0x1f) == 5) return true;
-        }
-    return false;
+bool has_keyframe(const std::vector<uint8_t>& au, VideoCodec codec) {
+    // Random-access pictures ONLY: H.264 IDR (NAL type 5) or HEVC IRAP (types
+    // 16..21). xCloud repeats SPS/PPS in-band without an IDR, and the same is
+    // true for HEVC VPS/SPS/PPS (32..34); accepting those resumed decode on
+    // P-frames whose references were never decoded -- the decoder concealed
+    // them from uninitialized surfaces, producing self-sustaining green/
+    // pixelated garbage. Only a real IDR/CRA rebuilds the reference chain
+    // (green-vita gates on has_idr for exactly this reason).
+    return has_random_access_picture(au.data(), au.size(), codec);
 }
 
 }  // namespace
@@ -184,7 +229,8 @@ bool VideoJitterBuffer::try_assemble(Frame& f, std::vector<uint8_t>& au,
     // frames and consume sequence numbers, and treating those as loss was
     // dropping every frame and freezing the stream.
     const Packet* first = ordered.front();
-    if (!is_partition_head(first->payload.data(), first->payload.size()))
+    if (!is_partition_head(first->payload.data(), first->payload.size(),
+                           codec_))
         return false;
     for (size_t i = 1; i < ordered.size(); ++i)
         if (ordered[i]->seq != static_cast<uint16_t>(ordered[i - 1]->seq + 1))
@@ -192,7 +238,7 @@ bool VideoJitterBuffer::try_assemble(Frame& f, std::vector<uint8_t>& au,
 
     au.clear();
     for (const Packet* pk : ordered) {
-        depacketize(pk->payload.data(), pk->payload.size(), au);
+        depacketize(pk->payload.data(), pk->payload.size(), au, codec_);
         if (au.size() > kMaxAccessUnitBytes) return false;
     }
     return true;
@@ -256,7 +302,7 @@ void VideoJitterBuffer::receive(const uint8_t* rtp, size_t len, uint64_t now_ms,
             const uint32_t timestamp = front.timestamp;
             last_ts_ = timestamp;
             frames_.pop_front();
-            const bool keyframe = has_keyframe(au);
+            const bool keyframe = has_keyframe(au, codec_);
             if (waiting_keyframe_) {
                 if (!keyframe) {  // still no clean IDR -> keep dropping
                     *want_keyframe = true;

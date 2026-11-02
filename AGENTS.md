@@ -60,6 +60,22 @@ script with `--container`, which builds in-place without nested Docker.
 - `switch/src/switch/stream/` — streaming engine, FFmpeg/Opus pipeline, libpeer
   transport, and deko3d renderer. `Engine` owns worker/decode/native-UDP threads;
   only the main thread may create or destroy SDL textures.
+- Video is H.265/HEVC end to end: the datachannel `getstatus` reply requests
+  `codec: h265`, the libpeer offer advertises `H265/90000` (PT 104, RFC 7798),
+  `VideoJitterBuffer` depacketizes single NAL/AP(48)/FU(49), and
+  `VideoDecoder` opens `AV_CODEC_ID_HEVC` on nvtegra. Keyframe gating accepts
+  HEVC IRAP NAL types 16-21 (never bare VPS/SPS/PPS). Changing the codec means
+  updating all four places at once.
+- Settings -> Advanced selects the codec (`CodecPreference`: Auto / H.265 /
+  H.264, persisted as `codec` in `settings.json`) and the FPS limit (`fps`,
+  sent as `framerate_max` in the `getstatus` reply). Auto codec falls back to
+  H.264 when `video_.init()` fails, and the worker retries the session once
+  with H.264 when an H.265 session produces no frame. `Engine::worker()` runs
+  `run_session()` in a loop for that; the decoder reopen is handed to the
+  decode thread through `pendingCodec_` because only that thread owns
+  `VideoDecoder` while streaming.
+- The performance overlay (`QuickPerformance`) shows resolution, codec and
+  `measured/target Mbps`; `Engine::update_net_stats()` feeds it once per second.
 - Streaming resolution is requested in the gateway `x`/`y` parameters and
   `bitrate_max`: 720p = 15 Mbps, 720HQ = 20 Mbps, 1080p = 25 Mbps,
   1080HQ = 30 Mbps; Auto follows dock mode.

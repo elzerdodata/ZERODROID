@@ -998,36 +998,44 @@ void DkVideoRenderer::update_hud(AVFrame* frame) {
         fps_tick_ = now;
     }
     char buf[220];
+    const char* codec =
+        codec_kind_.load(std::memory_order_relaxed) ? "H.265" : "H.264";
+    char bitrate[48];
+    const float mbps = net_mbps_.load(std::memory_order_relaxed);
+    const int cap = bitrate_cap_mbps_.load(std::memory_order_relaxed);
+    if (cap > 0) {
+        std::snprintf(bitrate, sizeof(bitrate), "%.1f/%d Mbps", mbps, cap);
+    } else {
+        std::snprintf(bitrate, sizeof(bitrate), "%.1f Mbps", mbps);
+    }
     if (net_valid_.load(std::memory_order_relaxed)) {
         if (quick_state_.ping) {
             std::snprintf(buf, sizeof(buf),
-                          "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\n"
-                          "%.1f Mbps  loss %.1f%%\nbuf %dms  ping %dms",
-                          frame->width, frame->height, fps_, output_fps_,
-                          generated_fps_,
-                          net_mbps_.load(std::memory_order_relaxed),
+                          "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%s  loss %.1f%%\nbuf %dms  ping %dms",
+                          frame->width, frame->height, codec, fps_, output_fps_,
+                          generated_fps_, bitrate,
                           net_loss_.load(std::memory_order_relaxed),
                           net_buffer_ms_.load(std::memory_order_relaxed),
                           ping_ms_);
         } else {
             std::snprintf(buf, sizeof(buf),
-                          "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\n"
-                          "%.1f Mbps  loss %.1f%%\nbuf %dms",
-                          frame->width, frame->height, fps_, output_fps_,
-                          generated_fps_,
-                          net_mbps_.load(std::memory_order_relaxed),
+                          "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%s  loss %.1f%%\nbuf %dms",
+                          frame->width, frame->height, codec, fps_, output_fps_,
+                          generated_fps_, bitrate,
                           net_loss_.load(std::memory_order_relaxed),
                           net_buffer_ms_.load(std::memory_order_relaxed));
         }
     } else if (quick_state_.ping) {
         std::snprintf(buf, sizeof(buf),
-                      "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
-                      frame->width, frame->height, fps_, output_fps_,
+                      "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
+                      frame->width, frame->height, codec, fps_, output_fps_,
                       generated_fps_, ping_ms_);
     } else {
         std::snprintf(buf, sizeof(buf),
-                      "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps",
-                      frame->width, frame->height, fps_, output_fps_,
+                      "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps",
+                      frame->width, frame->height, codec, fps_, output_fps_,
                       generated_fps_);
     }
     if (hud_text_cache_ == buf) return;  // unchanged -> keep the current texture

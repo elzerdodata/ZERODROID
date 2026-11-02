@@ -24,36 +24,20 @@ enum AVPixelFormat pick_hw_format(AVCodecContext* context,
 }
 #endif
 
-bool contains_idr(const uint8_t* data, size_t size) {
-    for (size_t i = 0; i + 3 < size; ++i) {
-        size_t start_code = 0;
-        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
-            start_code = 3;
-        } else if (i + 4 < size && data[i] == 0 && data[i + 1] == 0 &&
-                   data[i + 2] == 0 && data[i + 3] == 1) {
-            start_code = 4;
-        }
-        if (!start_code) continue;
-        if (i + start_code < size &&
-            (data[i + start_code] & 0x1f) == 5) {
-            return true;
-        }
-        i += start_code - 1;
-    }
-    return false;
-}
-
 }  // namespace
 
-bool VideoDecoder::init(SDL_Renderer* renderer) {
+bool VideoDecoder::init(SDL_Renderer* renderer, VideoCodec codec) {
     renderer_ = renderer;
+    codec_ = codec;
     error_ = false;
     waiting_keyframe_ = false;
     waiting_since_ms_ = 0;
 
-    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    if (!codec) return false;
-    context_ = avcodec_alloc_context3(codec);
+    const AVCodecID codec_id =
+        codec == VideoCodec::H265 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+    const AVCodec* decoder = avcodec_find_decoder(codec_id);
+    if (!decoder) return false;
+    context_ = avcodec_alloc_context3(decoder);
     if (!context_) return false;
 
     context_->flags |= AV_CODEC_FLAG_LOW_DELAY;
@@ -77,7 +61,7 @@ bool VideoDecoder::init(SDL_Renderer* renderer) {
     context_->thread_count = 4;
 #endif
 
-    if (avcodec_open2(context_, codec, nullptr) != 0) return false;
+    if (avcodec_open2(context_, decoder, nullptr) != 0) return false;
     frame_ = av_frame_alloc();
     held_frame_ = av_frame_alloc();
     packet_ = av_packet_alloc();
@@ -106,12 +90,13 @@ bool VideoDecoder::ensure_texture(SDL_Renderer* renderer, int width,
 
 bool VideoDecoder::decode(const uint8_t* data, size_t size) {
     // After a decode failure, predictive frames only spread the corruption.
-    // Discard everything until a clean IDR arrives and resets the references.
+    // Discard everything until a clean IRAP (H.264 IDR / HEVC IDR or CRA)
+    // arrives and resets the references.
     // If the encoder ignores keyframe requests for too long, resume anyway:
     // holding the last good frame forever looks like a frozen/menu image.
     if (waiting_keyframe_) {
         const uint64_t now = SDL_GetTicks64();
-        if (!contains_idr(data, size)) {
+        if (!has_random_access_picture(data, size, codec_)) {
             if (now - waiting_since_ms_ < 4000) return false;
             waiting_keyframe_ = false;
         } else {

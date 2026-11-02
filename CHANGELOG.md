@@ -1,5 +1,18 @@
 # ZERODROID changelog
 
+## v0.8.9 - H.265 and advanced streaming settings
+
+- Switched streaming to H.265/HEVC: the gateway handshake requests `h265`, the
+  WebRTC offer advertises `H265/90000` (payload type 104, RFC 7798) and the
+  NVDEC/nvtegra path decodes HEVC zero-copy into the existing deko3d renderer.
+- Added an RFC 7798 depacketizer (single NAL, AP and FU) and HEVC IRAP
+  keyframe gating (NAL types 16-21) to the video jitter buffer.
+- Settings -> Advanced (collapsible): video codec (Auto / H.265 / H.264) and
+  FPS limit (Auto / 30 / 60). Auto prefers H.265 and retries the session once
+  with H.264 when no frame arrives; Auto FPS keeps the previous 60 fps default.
+- The in-stream performance overlay now shows the negotiated codec and the
+  measured/target bitrate.
+
 ## v0.8.8 - Quality modes and session reuse
 
 - Added 720HQ (20 Mbps) and 1080HQ (30 Mbps) streaming modes.

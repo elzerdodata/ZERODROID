@@ -22,6 +22,7 @@
 #include <deko3d.hpp>
 
 #include "quick_menu.hpp"
+#include "video_codec.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -76,6 +77,16 @@ public:
         net_loss_.store(loss_pct, std::memory_order_relaxed);
         net_buffer_ms_.store(buffer_ms, std::memory_order_relaxed);
         net_valid_.store(true, std::memory_order_relaxed);
+    }
+
+    // Codec negotiated for this session and the bitrate ceiling requested from
+    // the gateway; both are shown in the performance HUD.
+    void set_video_codec(VideoCodec codec) {
+        codec_kind_.store(codec == VideoCodec::H265 ? 1 : 0,
+                          std::memory_order_relaxed);
+    }
+    void set_bitrate_cap_mbps(int mbps) {
+        bitrate_cap_mbps_.store(mbps, std::memory_order_relaxed);
     }
 
     // Bring up the deko3d device/swapchain. Call after SDL has released the
@@ -219,6 +230,8 @@ private:
     std::atomic<float> net_loss_{0.0f};
     std::atomic<int> net_buffer_ms_{0};
     std::atomic<bool> net_valid_{false};
+    std::atomic<int> codec_kind_{1};        // 1 = H.265, 0 = H.264
+    std::atomic<int> bitrate_cap_mbps_{0};  // 0 = unknown
 
     // Always-visible two-dot handle and its optional expanded quick panel.
     // One transparent RGBA texture covers both shapes and costs one overlay

@@ -402,7 +402,7 @@ index 94905a8..1d204ff 100644
  
  #define CONFIG_IPV6 0
 diff --git a/src/peer_connection.c b/src/peer_connection.c
-index c763e80..b3442c2 100644
+index c763e80..7d8620e 100644
 --- a/src/peer_connection.c
 +++ b/src/peer_connection.c
 @@ -45,6 +45,10 @@ struct PeerConnection {
@@ -650,15 +650,15 @@ index c763e80..b3442c2 100644
 +            // remote_assrc = 0, so every Opus packet (nonzero SSRC) matched
 +            // neither branch and was dropped -> no console audio. This offer
 +            // bundles exactly one recvonly audio (PT 111) and one video
-+            // (PT 102) stream (see sdp.c), so demux the stray packet by its
-+            // payload type and latch its SSRC; the next packet then takes the
-+            // fast path above.
++            // stream (PT 102 H264 or PT 104 H265, see sdp.c), so demux the
++            // stray packet by its payload type and latch its SSRC; the next
++            // packet then takes the fast path above.
 +            uint8_t pt = pc->agent_buf[1] & 0x7f;
 +            if (pt == 111) {
 +              LOGI("audio SSRC %" PRIu32 " latched by PT (no a=ssrc in answer)", ssrc);
 +              pc->remote_assrc = ssrc;
 +              rtp_decoder_decode(&pc->artp_decoder, pc->agent_buf, pc->agent_ret);
-+            } else if (pt == 102) {
++            } else if (pt == 102 || pt == 104) {
 +              LOGI("video SSRC %" PRIu32 " latched by PT (no a=ssrc in answer)", ssrc);
 +              pc->remote_vssrc = ssrc;
 +              rtp_decoder_decode(&pc->vrtp_decoder, pc->agent_buf, pc->agent_ret);
@@ -690,7 +690,16 @@ index c763e80..b3442c2 100644
        agent_clear_candidates(&pc->agent);
        pc->agent.mode = AGENT_MODE_CONTROLLING;
        break;
-@@ -578,6 +796,10 @@ char* peer_connection_lookup_sid_label(PeerConnection* pc, uint16_t sid) {
+@@ -464,6 +682,8 @@ static const char* peer_connection_create_sdp(PeerConnection* pc, SdpType sdp_ty
+ 
+   if (pc->config.video_codec == CODEC_H264) {
+     sdp_append_h264(pc->sdp);
++  } else if (pc->config.video_codec == CODEC_H265) {
++    sdp_append_h265(pc->sdp);
+   }
+ 
+   switch (pc->config.audio_codec) {
+@@ -578,6 +798,10 @@ char* peer_connection_lookup_sid_label(PeerConnection* pc, uint16_t sid) {
  
  int peer_connection_add_ice_candidate(PeerConnection* pc, char* candidate) {
    Agent* agent = &pc->agent;
@@ -702,10 +711,18 @@ index c763e80..b3442c2 100644
      return -1;
    }
 diff --git a/src/peer_connection.h b/src/peer_connection.h
-index b087893..9f6ee48 100644
+index b087893..5892dac 100644
 --- a/src/peer_connection.h
 +++ b/src/peer_connection.h
-@@ -113,10 +113,32 @@ int peer_connection_datachannel_send(PeerConnection* pc, char* message, size_t l
+@@ -52,6 +52,7 @@ typedef enum MediaCodec {
+ 
+   /* Video */
+   CODEC_H264,
++  CODEC_H265,
+   CODEC_VP8,    // not implemented yet
+   CODEC_MJPEG,  // not implemented yet
+ 
+@@ -113,10 +114,32 @@ int peer_connection_datachannel_send(PeerConnection* pc, char* message, size_t l
  
  int peer_connection_datachannel_send_sid(PeerConnection* pc, char* message, size_t len, uint16_t sid);
  
@@ -739,10 +756,23 @@ index b087893..9f6ee48 100644
  
  void peer_connection_set_local_description(PeerConnection* pc, const char* sdp, SdpType sdp_type);
 diff --git a/src/rtp.c b/src/rtp.c
-index 0a3136a..9239e67 100644
+index 0a3136a..71fffee 100644
 --- a/src/rtp.c
 +++ b/src/rtp.c
-@@ -220,56 +220,26 @@ int rtp_encoder_encode(RtpEncoder* rtp_encoder, const uint8_t* buf, size_t size)
+@@ -193,6 +193,12 @@ void rtp_encoder_init(RtpEncoder* rtp_encoder, MediaCodec codec, RtpOnPacket on_
+       rtp_encoder->timestamp_increment = 90000 / 30;  // 30 FPS.
+       rtp_encoder->encode_func = rtp_encoder_encode_h264;
+       break;
++    case CODEC_H265:
++      rtp_encoder->type = PT_H265;
++      rtp_encoder->ssrc = SSRC_H265;
++      rtp_encoder->timestamp_increment = 90000 / 30;  // 30 FPS.
++      rtp_encoder->encode_func = rtp_encoder_encode_generic;
++      break;
+     case CODEC_PCMA:
+       rtp_encoder->type = PT_PCMA;
+       rtp_encoder->ssrc = SSRC_PCMA;
+@@ -220,56 +226,28 @@ int rtp_encoder_encode(RtpEncoder* rtp_encoder, const uint8_t* buf, size_t size)
    return rtp_encoder->encode_func(rtp_encoder, (uint8_t*)buf, size);
  }
  
@@ -751,6 +781,8 @@ index 0a3136a..9239e67 100644
 +// keyframe gating are done by the caller's jitter buffer (VideoJitterBuffer),
 +// mirroring green-vita. libpeer's own in-arrival-order NALU assembly corrupted
 +// frames on any reorder/loss and produced green garbage, so it is bypassed.
++// Used for both H264 (RFC 6184) and H265 (RFC 7798): the caller knows which
++// codec was negotiated and depacketizes accordingly.
  static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
 -  static const uint32_t nalu_start_4bytecode = 0x01000000;
 -  static uint8_t nalu_buf[CONFIG_MAX_NALU_SIZE];
@@ -814,6 +846,34 @@ index 0a3136a..9239e67 100644
    // even if there is no callback set, assume everything is ok for caller and do not return an error
    return (int)size;
  }
+@@ -280,6 +258,7 @@ void rtp_decoder_init(RtpDecoder* rtp_decoder, MediaCodec codec, RtpOnPacket on_
+ 
+   switch (codec) {
+     case CODEC_H264:
++    case CODEC_H265:
+       rtp_decoder->decode_func = rtp_decode_h264;
+       break;
+     case CODEC_PCMA:
+diff --git a/src/rtp.h b/src/rtp.h
+index 4f94614..9ce2c08 100644
+--- a/src/rtp.h
++++ b/src/rtp.h
+@@ -21,6 +21,7 @@ typedef enum RtpPayloadType {
+   PT_PCMA = 8,
+   PT_G722 = 9,
+   PT_H264 = 96,
++  PT_H265 = 104,
+   PT_OPUS = 111
+ 
+ } RtpPayloadType;
+@@ -28,6 +29,7 @@ typedef enum RtpPayloadType {
+ typedef enum RtpSsrc {
+ 
+   SSRC_H264 = 1,
++  SSRC_H265 = 2,
+   SSRC_PCMA = 4,
+   SSRC_PCMU = 5,
+   SSRC_OPUS = 6,
 diff --git a/src/sctp.c b/src/sctp.c
 index 644f8d8..a67c2ed 100644
 --- a/src/sctp.c
@@ -869,10 +929,10 @@ index 1116996..4bf9b02 100644
  
  void sctp_onopen(Sctp* sctp, void (*onopen)(void* userdata));
 diff --git a/src/sdp.c b/src/sdp.c
-index b7661a4..194121c 100644
+index b7661a4..4cdbab2 100644
 --- a/src/sdp.c
 +++ b/src/sdp.c
-@@ -27,16 +27,27 @@ void sdp_reset(char* sdp) {
+@@ -27,16 +27,47 @@ void sdp_reset(char* sdp) {
  }
  
  void sdp_append_h264(char* sdp) {
@@ -904,10 +964,30 @@ index b7661a4..194121c 100644
 +  sdp_append(sdp, "a=rtcp-fb:102 nack");
 +  sdp_append(sdp, "a=rtcp-fb:102 nack pli");
 +  sdp_append(sdp, "a=recvonly");
++}
++
++void sdp_append_h265(char* sdp) {
++  // HEVC over WebRTC (RFC 7798 + draft-ietf-avtcore-hevc-webrtc). Mirrors the
++  // H264 section above: same m-line shape, recvonly, dynamic payload 104 and
++  // the full RTCP feedback set. VPS/SPS/PPS are never advertised in SDP --
++  // WebRTC sends them in-band ahead of every IRAP.
++  sdp_append(sdp, "m=video 9 UDP/TLS/RTP/SAVPF 104");
++  sdp_append(sdp, "c=IN IP4 0.0.0.0");
++  sdp_append(sdp, "a=mid:video");
++  sdp_append(sdp, "a=rtcp-mux");
++  sdp_append(sdp, "a=rtcp-rsize");
++  sdp_append(sdp, "a=rtpmap:104 H265/90000");
++  sdp_append(sdp,
++             "a=fmtp:104 profile-id=1;tier-flag=0;level-id=123;tx-mode=SRST");
++  sdp_append(sdp, "a=rtcp-fb:104 goog-remb");
++  sdp_append(sdp, "a=rtcp-fb:104 ccm fir");
++  sdp_append(sdp, "a=rtcp-fb:104 nack");
++  sdp_append(sdp, "a=rtcp-fb:104 nack pli");
++  sdp_append(sdp, "a=recvonly");
  }
  
  void sdp_append_pcma(char* sdp) {
-@@ -60,13 +71,15 @@ void sdp_append_pcmu(char* sdp) {
+@@ -60,13 +91,15 @@ void sdp_append_pcmu(char* sdp) {
  }
  
  void sdp_append_opus(char* sdp) {
@@ -927,6 +1007,19 @@ index b7661a4..194121c 100644
  }
  
  void sdp_append_datachannel(char* sdp) {
+diff --git a/src/sdp.h b/src/sdp.h
+index ba85d71..0a10d23 100644
+--- a/src/sdp.h
++++ b/src/sdp.h
+@@ -12,6 +12,8 @@
+ 
+ void sdp_append_h264(char* sdp);
+ 
++void sdp_append_h265(char* sdp);
++
+ void sdp_append_pcma(char* sdp);
+ 
+ void sdp_append_pcmu(char* sdp);
 diff --git a/src/socket.c b/src/socket.c
 index 6f7d8ef..d19e903 100644
 --- a/src/socket.c

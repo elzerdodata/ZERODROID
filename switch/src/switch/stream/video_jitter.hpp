@@ -9,9 +9,13 @@
 #include <optional>
 #include <vector>
 
+#include "video_codec.hpp"
+
 namespace gnx::stream {
 
-// RTP -> H.264 access-unit reassembly with a proper time-delayed jitter buffer.
+// RTP -> Annex-B access-unit reassembly with a proper time-delayed jitter
+// buffer. Depacketizes H.264 (RFC 6184) and H.265/HEVC (RFC 7798); the active
+// codec is selected with set_codec().
 // Modeled on green-vita's VideoRtp + the reorder buffer its rtc stack provides.
 //
 // Why the delay matters: a naive "assemble the current frame, drop it the
@@ -22,16 +26,22 @@ namespace gnx::stream {
 //   * holds frames a short time (kHoldMs) so retransmits/reordering complete them,
 //   * emits complete frames strictly in timestamp (decode) order,
 //   * on unrecoverable loss (a frame times out, or a whole frame is missing),
-//     drops and refuses to emit anything until a fresh IDR -- no broken P-frames
-//     ever reach the decoder.
+//     drops and refuses to emit anything until a fresh IRAP -- no broken
+//     P-frames ever reach the decoder.
 class VideoJitterBuffer {
 public:
-    // H.264 RTP always uses a 90 kHz media clock. Preserve the timestamp all
+    // Video RTP always uses a 90 kHz media clock. Preserve the timestamp all
     // the way to the pacing layer: packet/decode arrival time contains network
     // jitter and is not a reliable indication of the source frame cadence.
     using Emit =
         std::function<void(const uint8_t* data, size_t size, uint32_t timestamp)>;
     using NackFn = std::function<void(uint16_t pid, uint16_t blp)>;
+
+    // Codec the incoming RTP payloads are packed with. Must match what the
+    // gateway/WebRTC peer negotiated; the depacketizer and the keyframe gate
+    // both depend on it.
+    void set_codec(VideoCodec codec) { codec_ = codec; }
+    VideoCodec codec() const { return codec_; }
 
     void reset();
 
@@ -47,7 +57,7 @@ public:
         uint32_t last_frame_bytes = 0;
     };
     Stats stats() const { return stats_; }
-    // True while dropping everything until a real IDR arrives.
+    // True while dropping everything until a real IRAP (IDR/CRA) arrives.
     bool waiting_keyframe() const { return waiting_keyframe_; }
 
 private:
@@ -67,6 +77,7 @@ private:
 
     std::deque<Frame> frames_;         // pending frames, ascending timestamp
     std::optional<uint32_t> last_ts_;  // timestamp of the last emitted frame
+    VideoCodec codec_ = VideoCodec::H265;
     bool waiting_keyframe_ = true;
     uint64_t last_keyframe_ms_ = 0;
     uint64_t last_keyframe_request_ms_ = 0;

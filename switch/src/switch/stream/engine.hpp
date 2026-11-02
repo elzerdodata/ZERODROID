@@ -68,6 +68,11 @@ public:
     }
     // 0 = auto, 1 = 720p, 2 = 720HQ, 3 = 1080p, 4 = 1080HQ.
     void set_stream_resolution(int mode);
+    // Settings -> Advanced. Auto tries H.265 first and falls back to H.264.
+    void set_codec_preference(CodecPreference preference);
+    // 0 = auto (current default), 1 = 30 fps, 2 = 60 fps.
+    void set_fps_mode(int mode);
+    VideoCodec active_codec() const { return activeCodec_.load(); }
     int ping_ms() const { return pingMs_.load(); }
 
     struct RumbleCommand {
@@ -101,6 +106,13 @@ private:
     };
 
     void worker();
+    // One full streaming session. Returns NoVideo when the transport came up
+    // but no frame ever arrived (the only case eligible for a codec fallback).
+    enum class SessionResult { Completed, NoVideo, Fatal };
+    SessionResult run_session();
+    bool prepare_codec_fallback();
+    int stream_fps() const { return fpsMode_ == 1 ? 30 : 60; }
+    void update_net_stats(uint64_t nowMs);
     void decode_loop();
     bool connect_gateway(const ZERODROID::StreamSessionConfig& config);
     bool setup_peer();
@@ -153,6 +165,17 @@ private:
     std::atomic<int> pingMs_{-1};
     std::atomic<uint64_t> lastKeyframeRequestMs_{0};
     int streamResolution_{0};
+    CodecPreference codecPreference_{CodecPreference::Auto};
+    std::atomic<VideoCodec> activeCodec_{VideoCodec::H265};
+    int fpsMode_{0};  // 0 = auto, 1 = 30, 2 = 60
+    // Set by the worker to ask the decode thread (the only owner of video_)
+    // to reopen the decoder with another codec. -1 = nothing pending.
+    std::atomic<int> pendingCodec_{-1};
+    std::atomic<uint64_t> videoBytes_{0};
+    uint64_t netStatsTicks_{0};
+    uint64_t netStatsBytes_{0};
+    uint32_t netStatsNacks_{0};
+    uint32_t netStatsPackets_{0};
     float mouseX_{0.5f};
     float mouseY_{0.5f};
     bool mouseVisible_{false};

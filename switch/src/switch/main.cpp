@@ -105,6 +105,10 @@ struct ServerSettings {
     bool xboxFaceLayout{false};
     int language{0};  // 0 = Espanol, 1 = English
     int resolution{0};  // 0=auto, 1=720p, 2=720HQ, 3=1080p, 4=1080HQ
+    // Settings -> Advanced. codec: 0=auto (H.265 then H.264), 1=H.265, 2=H.264.
+    int codec{0};
+    // fps: 0=auto (current default), 1=30, 2=60.
+    int fps{0};
     std::vector<int> favoriteGameIds;
     std::vector<int> recentGameIds;
 };
@@ -131,6 +135,8 @@ ServerSettings load_server_settings() {
         settings.xboxFaceLayout = value.value("xboxFaceLayout", false);
         settings.language = std::clamp(value.value("language", 0), 0, 1);
         settings.resolution = std::clamp(value.value("resolution", 0), 0, 4);
+        settings.codec = std::clamp(value.value("codec", 0), 0, 2);
+        settings.fps = std::clamp(value.value("fps", 0), 0, 2);
         settings.favoriteGameIds = value.value(
             "favoriteGameIds", std::vector<int>{});
         settings.recentGameIds = value.value(
@@ -153,6 +159,8 @@ bool save_server_settings(const ServerSettings& settings) {
         {"xboxFaceLayout", settings.xboxFaceLayout},
         {"language", settings.language},
         {"resolution", settings.resolution},
+        {"codec", settings.codec},
+        {"fps", settings.fps},
         {"favoriteGameIds", settings.favoriteGameIds},
         {"recentGameIds", settings.recentGameIds},
     }).dump(2);
@@ -267,7 +275,36 @@ constexpr int kSettingsCardH = 170;
 constexpr int kSettingsCardGap = 28;
 constexpr int kSettingsViewTop = 205;
 constexpr int kSettingsViewBottom = 890;
-constexpr int kSettingsRowCount = 6;
+
+// Settings cards. The Advanced card expands in place and reveals the codec and
+// frame-rate selectors, so the navigable list is rebuilt whenever it toggles.
+enum class SettingsRowId {
+    Regions,
+    Controller,
+    Location,
+    Resolution,
+    Advanced,
+    Codec,
+    Fps,
+    Language,
+    Logout,
+};
+
+std::vector<SettingsRowId> settings_rows(bool advancedOpen) {
+    std::vector<SettingsRowId> rows = {
+        SettingsRowId::Regions,    SettingsRowId::Controller,
+        SettingsRowId::Location,   SettingsRowId::Resolution,
+        SettingsRowId::Advanced,
+    };
+    if (advancedOpen) {
+        rows.push_back(SettingsRowId::Codec);
+        rows.push_back(SettingsRowId::Fps);
+    }
+    rows.push_back(SettingsRowId::Language);
+    rows.push_back(SettingsRowId::Logout);
+    return rows;
+}
+
 
 // Touch controller for the in-stream two-dot menu. Returns true when the tap
 // belongs to the panel; a tap outside closes it.
@@ -438,6 +475,14 @@ int main(int argc, char* argv[]) {
     auto stream = std::make_unique<gnx::stream::Engine>(api, gfx.renderer());
     stream->set_xbox_face_layout(serverSettings.xboxFaceLayout);
     stream->set_quick_menu_state(quickMenuState);
+    stream->set_stream_resolution(serverSettings.resolution);
+    stream->set_codec_preference(
+        serverSettings.codec == 1
+            ? gnx::stream::CodecPreference::H265
+            : serverSettings.codec == 2
+                  ? gnx::stream::CodecPreference::H264
+                  : gnx::stream::CodecPreference::Auto);
+    stream->set_fps_mode(serverSettings.fps);
     ZERODROID::DeviceCodeAuthArtifact authArtifact;
 
     bool hasSession = api.loadSessionFromSD();
@@ -479,7 +524,8 @@ int main(int argc, char* argv[]) {
     std::vector<ZERODROID::ServerLocation> serverLocations;
     std::string serverConfigError;
     std::size_t selectedLocation = 0;  // 0 = automatic
-    int selectedSettingsRow = 0;       // regions, controller, location, resolution, language, logout
+    int selectedSettingsRow = 0;       // index into settings_rows()
+    bool settingsAdvancedOpen = false; // Advanced card expanded (codec/fps)
     int settingsScroll = 0;
     bool serverSaveInFlight = false;
     std::future<AsyncServerSaveResult> serverSaveFuture;
@@ -933,19 +979,24 @@ int main(int argc, char* argv[]) {
 
         if (settingsOpen) {
             const std::size_t locationCount = serverLocations.size() + 1;
+            const std::vector<SettingsRowId> rows =
+                settings_rows(settingsAdvancedOpen);
+            const int rowCount = static_cast<int>(rows.size());
             if (navDown & HidNpadButton_Up) {
                 selectedSettingsRow = std::max(0, selectedSettingsRow - 1);
             }
             if (navDown & HidNpadButton_Down) {
-                selectedSettingsRow = std::min(5, selectedSettingsRow + 1);
+                selectedSettingsRow =
+                    std::min(rowCount - 1, selectedSettingsRow + 1);
             }
+            selectedSettingsRow =
+                std::clamp(selectedSettingsRow, 0, rowCount - 1);
             {
-                constexpr int stride = kSettingsCardH + kSettingsCardGap;
-                constexpr int contentH =
-                    kSettingsRowCount * kSettingsCardH +
-                    (kSettingsRowCount - 1) * kSettingsCardGap;
-                constexpr int viewH = kSettingsViewBottom - kSettingsViewTop;
-                constexpr int maxScroll = contentH > viewH ? contentH - viewH : 0;
+                const int stride = kSettingsCardH + kSettingsCardGap;
+                const int contentH = rowCount * kSettingsCardH +
+                                     (rowCount - 1) * kSettingsCardGap;
+                const int viewH = kSettingsViewBottom - kSettingsViewTop;
+                const int maxScroll = contentH > viewH ? contentH - viewH : 0;
                 const int rowTop = selectedSettingsRow * stride;
                 const int rowBottom = rowTop + kSettingsCardH;
                 if (rowTop < settingsScroll) settingsScroll = rowTop;
@@ -954,17 +1005,19 @@ int main(int argc, char* argv[]) {
                 }
                 settingsScroll = std::clamp(settingsScroll, 0, maxScroll);
             }
-            if (selectedSettingsRow == 0 && serverConfigReady &&
-                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
-                          HidNpadButton_A))) {
+
+            const SettingsRowId current = rows[selectedSettingsRow];
+            const u64 cycle = navDown & (HidNpadButton_Left |
+                                         HidNpadButton_Right |
+                                         HidNpadButton_A);
+            if (current == SettingsRowId::Regions && serverConfigReady &&
+                cycle) {
                 serverSettings.allowDistantRegions =
                     !serverSettings.allowDistantRegions;
                 save_server_settings(serverSettings);
                 startServerSave();
             }
-            if (selectedSettingsRow == 1 &&
-                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
-                          HidNpadButton_A))) {
+            if (current == SettingsRowId::Controller && cycle) {
                 serverSettings.xboxFaceLayout =
                     !serverSettings.xboxFaceLayout;
                 quickMenuState.xboxFaceLayout =
@@ -978,7 +1031,7 @@ int main(int argc, char* argv[]) {
                     : ui("Controles configurados con etiquetas Nintendo.",
                          "Controls now use Nintendo button labels.");
             }
-            if (selectedSettingsRow == 2 && locationCount > 0) {
+            if (current == SettingsRowId::Location && locationCount > 0) {
                 if ((navDown & HidNpadButton_Left) && selectedLocation > 0) {
                     --selectedLocation;
                 }
@@ -989,7 +1042,7 @@ int main(int argc, char* argv[]) {
             }
             if ((kDown & HidNpadButton_Y) && !serverConfigInFlight &&
                 !serverSaveInFlight) startServerConfigLoad();
-            if (selectedSettingsRow == 2 &&
+            if (current == SettingsRowId::Location &&
                 (kDown & HidNpadButton_A) && serverConfigReady &&
                 !serverConfigInFlight && !serverSaveInFlight) {
                 serverSettings.preferredLocationId = selectedLocation == 0
@@ -1000,9 +1053,7 @@ int main(int argc, char* argv[]) {
                 save_server_settings(serverSettings);
                 startServerSave();
             }
-            if (selectedSettingsRow == 3 &&
-                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
-                          HidNpadButton_A))) {
+            if (current == SettingsRowId::Resolution && cycle) {
                 const int direction =
                     (navDown & HidNpadButton_Left) ? -1 : 1;
                 serverSettings.resolution =
@@ -1031,16 +1082,54 @@ int main(int argc, char* argv[]) {
                         break;
                 }
             }
-            if (selectedSettingsRow == 4 &&
-                (navDown & (HidNpadButton_Left | HidNpadButton_Right |
-                          HidNpadButton_A))) {
+            if (current == SettingsRowId::Advanced && cycle) {
+                settingsAdvancedOpen = !settingsAdvancedOpen;
+                // Keep the cursor on the Advanced card when the list shrinks.
+                selectedSettingsRow = 4;
+            }
+            if (current == SettingsRowId::Codec && cycle) {
+                const int direction =
+                    (navDown & HidNpadButton_Left) ? -1 : 1;
+                serverSettings.codec =
+                    (serverSettings.codec + direction + 3) % 3;
+                stream->set_codec_preference(
+                    serverSettings.codec == 1
+                        ? gnx::stream::CodecPreference::H265
+                        : serverSettings.codec == 2
+                              ? gnx::stream::CodecPreference::H264
+                              : gnx::stream::CodecPreference::Auto);
+                save_server_settings(serverSettings);
+                libraryNotice =
+                    serverSettings.codec == 1
+                        ? ui("Codec de video: H.265.",
+                             "Video codec: H.265.")
+                        : serverSettings.codec == 2
+                              ? ui("Codec de video: H.264.",
+                                   "Video codec: H.264.")
+                              : ui("Codec de video: Auto (H.265, luego H.264).",
+                                   "Video codec: Auto (H.265, then H.264).");
+            }
+            if (current == SettingsRowId::Fps && cycle) {
+                const int direction =
+                    (navDown & HidNpadButton_Left) ? -1 : 1;
+                serverSettings.fps = (serverSettings.fps + direction + 3) % 3;
+                stream->set_fps_mode(serverSettings.fps);
+                save_server_settings(serverSettings);
+                libraryNotice = serverSettings.fps == 1
+                    ? ui("Limite de FPS: 30.", "FPS limit: 30.")
+                    : serverSettings.fps == 2
+                          ? ui("Limite de FPS: 60.", "FPS limit: 60.")
+                          : ui("Limite de FPS: Auto.", "FPS limit: Auto.");
+            }
+            if (current == SettingsRowId::Language && cycle) {
                 serverSettings.language = serverSettings.language == 0 ? 1 : 0;
                 gnx::i18n::set_english(serverSettings.language == 1);
                 save_server_settings(serverSettings);
                 libraryNotice = ui("Idioma cambiado a Espanol.",
                                    "Language changed to English.");
             }
-            if (selectedSettingsRow == 5 && (kDown & HidNpadButton_A)) {
+            if (current == SettingsRowId::Logout &&
+                (kDown & HidNpadButton_A)) {
                 logout();
             }
             if (kDown & HidNpadButton_B) settingsOpen = false;
@@ -1174,14 +1263,21 @@ int main(int argc, char* argv[]) {
                          440, 130,
                          gnx::gfx::FontSize::Title, gnx::gfx::kText);
 
-                constexpr int stride = kSettingsCardH + kSettingsCardGap;
-                constexpr int contentH =
-                    kSettingsRowCount * kSettingsCardH +
-                    (kSettingsRowCount - 1) * kSettingsCardGap;
-                constexpr int viewH = kSettingsViewBottom - kSettingsViewTop;
-                constexpr int maxScroll = contentH > viewH ? contentH - viewH : 0;
+                const std::vector<SettingsRowId> rows =
+                    settings_rows(settingsAdvancedOpen);
+                const int rowCount = static_cast<int>(rows.size());
+                const int stride = kSettingsCardH + kSettingsCardGap;
+                const int contentH = rowCount * kSettingsCardH +
+                                     (rowCount - 1) * kSettingsCardGap;
+                const int viewH = kSettingsViewBottom - kSettingsViewTop;
+                const int maxScroll = contentH > viewH ? contentH - viewH : 0;
                 settingsScroll = std::clamp(settingsScroll, 0, maxScroll);
 
+                auto rowOf = [&](SettingsRowId id) {
+                    for (int i = 0; i < rowCount; ++i)
+                        if (rows[i] == id) return i;
+                    return -1;
+                };
                 auto settingsRow = [&](int row) {
                     return SDL_Rect{kSettingsCardX,
                                     kSettingsViewTop + row * stride -
@@ -1201,12 +1297,28 @@ int main(int argc, char* argv[]) {
                         selected ? 3 : 1);
                     return r;
                 };
+                // Disclosure arrow for the Advanced card: solid triangle drawn
+                // with scanlines so it does not depend on font glyph coverage.
+                auto draw_arrow = [&](int cx, int cy, bool up,
+                                      gnx::gfx::Color color) {
+                    constexpr int kHalfWidth = 20;
+                    constexpr int kHeight = 26;
+                    for (int row = 0; row < kHeight; row += 2) {
+                        const int fromBase = up ? kHeight - 1 - row : row;
+                        const int width =
+                            kHalfWidth * 2 * (kHeight - fromBase) / kHeight;
+                        if (width <= 0) continue;
+                        gfx.fill({cx - width / 2, cy - kHeight / 2 + row,
+                                  width, 2},
+                                 color);
+                    }
+                };
 
                 SDL_Rect contentClip = {kSettingsCardX, kSettingsViewTop,
                                         kSettingsCardW, viewH};
                 SDL_RenderSetClipRect(gfx.renderer(), &contentClip);
 
-                SDL_Rect distantRow = drawCard(0);
+                SDL_Rect distantRow = drawCard(rowOf(SettingsRowId::Regions));
                 gfx.text(ui("Permitir conexion a regiones lejanas",
                             "Allow connections to distant regions"),
                          distantRow.x + 40, distantRow.y + 64,
@@ -1223,7 +1335,7 @@ int main(int argc, char* argv[]) {
                     toggleTrack.y + 6, 34, 34};
                 gfx.fill(toggleKnob, gnx::gfx::kText);
 
-                SDL_Rect controllerRow = drawCard(1);
+                SDL_Rect controllerRow = drawCard(rowOf(SettingsRowId::Controller));
                 gfx.text(ui("Disposicion de botones A / B / X / Y",
                             "A / B / X / Y button layout"),
                          controllerRow.x + 40, controllerRow.y + 70,
@@ -1240,7 +1352,7 @@ int main(int argc, char* argv[]) {
                                   gnx::gfx::FontSize::Small,
                                   gnx::gfx::kText);
 
-                SDL_Rect locationRow = drawCard(2);
+                SDL_Rect locationRow = drawCard(rowOf(SettingsRowId::Location));
                 gfx.text(ui("Ubicacion de servidor preferida",
                             "Preferred server location"),
                          locationRow.x + 40, locationRow.y + 26,
@@ -1273,7 +1385,7 @@ int main(int argc, char* argv[]) {
                          locationSelect.y + 6,
                          gnx::gfx::FontSize::Body, gnx::gfx::kFocus);
 
-                SDL_Rect resolutionRow = drawCard(3);
+                SDL_Rect resolutionRow = drawCard(rowOf(SettingsRowId::Resolution));
                 gfx.text(ui("Resolucion de streaming", "Streaming resolution"),
                          resolutionRow.x + 40, resolutionRow.y + 70,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);
@@ -1296,7 +1408,62 @@ int main(int argc, char* argv[]) {
                                   gnx::gfx::FontSize::Small,
                                   gnx::gfx::kText);
 
-                SDL_Rect languageRow = drawCard(4);
+                SDL_Rect advancedRow = drawCard(rowOf(SettingsRowId::Advanced));
+                gfx.text(ui("Avanzado", "Advanced"),
+                         advancedRow.x + 40, advancedRow.y + 52,
+                         gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                gfx.text(ui("Codec de video y limite de FPS",
+                            "Video codec and FPS limit"),
+                         advancedRow.x + 40, advancedRow.y + 96,
+                         gnx::gfx::FontSize::Small, gnx::gfx::kTextDim);
+                SDL_Rect advancedChip = {
+                    advancedRow.x + advancedRow.w - 190,
+                    advancedRow.y + 52, 120, 64};
+                gfx.fill(advancedChip, settingsAdvancedOpen
+                    ? gnx::gfx::Color{16, 110, 80} : gnx::gfx::kBar);
+                gfx.frame(advancedChip, gnx::gfx::kFocus, 2);
+                draw_arrow(advancedChip.x + advancedChip.w / 2,
+                           advancedChip.y + advancedChip.h / 2,
+                           settingsAdvancedOpen, gnx::gfx::kText);
+
+                if (settingsAdvancedOpen) {
+                    SDL_Rect codecRow = drawCard(rowOf(SettingsRowId::Codec));
+                    gfx.text(ui("Codec de video", "Video codec"),
+                             codecRow.x + 40, codecRow.y + 70,
+                             gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                    SDL_Rect codecChip = {
+                        codecRow.x + codecRow.w - 330,
+                        codecRow.y + 52, 260, 64};
+                    gfx.fill(codecChip, gnx::gfx::kBar);
+                    gfx.frame(codecChip, gnx::gfx::kFocus, 2);
+                    const char* codecLabel = "AUTO";
+                    if (serverSettings.codec == 1) codecLabel = "H.265";
+                    if (serverSettings.codec == 2) codecLabel = "H.264";
+                    gfx.text_centered(codecLabel,
+                                      codecChip.x + codecChip.w / 2,
+                                      codecChip.y + 18,
+                                      gnx::gfx::FontSize::Small,
+                                      gnx::gfx::kText);
+
+                    SDL_Rect fpsRow = drawCard(rowOf(SettingsRowId::Fps));
+                    gfx.text(ui("Limite de FPS", "FPS limit"),
+                             fpsRow.x + 40, fpsRow.y + 70,
+                             gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                    SDL_Rect fpsChip = {
+                        fpsRow.x + fpsRow.w - 330, fpsRow.y + 52, 260, 64};
+                    gfx.fill(fpsChip, gnx::gfx::kBar);
+                    gfx.frame(fpsChip, gnx::gfx::kFocus, 2);
+                    const char* fpsLabel = "AUTO";
+                    if (serverSettings.fps == 1) fpsLabel = "30";
+                    if (serverSettings.fps == 2) fpsLabel = "60";
+                    gfx.text_centered(fpsLabel,
+                                      fpsChip.x + fpsChip.w / 2,
+                                      fpsChip.y + 18,
+                                      gnx::gfx::FontSize::Small,
+                                      gnx::gfx::kText);
+                }
+
+                SDL_Rect languageRow = drawCard(rowOf(SettingsRowId::Language));
                 gfx.text(ui("Idioma de la interfaz", "Interface language"),
                          languageRow.x + 40, languageRow.y + 70,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);
@@ -1312,7 +1479,7 @@ int main(int argc, char* argv[]) {
                                   gnx::gfx::FontSize::Small,
                                   gnx::gfx::kText);
 
-                SDL_Rect logoutRow = drawCard(5, true);
+                SDL_Rect logoutRow = drawCard(rowOf(SettingsRowId::Logout), true);
                 gfx.text(ui("Cerrar sesion", "Sign out"),
                          logoutRow.x + 40, logoutRow.y + 70,
                          gnx::gfx::FontSize::Body, gnx::gfx::kText);

@@ -378,6 +378,14 @@ void Engine::set_stream_resolution(int mode) {
     streamResolution_ = std::clamp(mode, 0, 4);
 }
 
+void Engine::set_codec_preference(CodecPreference preference) {
+    codecPreference_ = preference;
+}
+
+void Engine::set_fps_mode(int mode) {
+    fpsMode_ = std::clamp(mode, 0, 2);
+}
+
 void Engine::start(int appId, const std::string& preferredGateway) {
     stop();
     appId_ = appId;
@@ -420,7 +428,39 @@ void Engine::start(int appId, const std::string& preferredGateway) {
         nativeAudioPort_ = 0;
         nativeGroups_.clear();
     }
+    // The client speaks H.265 by default and H.264 when requested or when the
+    // HEVC decoder cannot be opened (Auto). The jitter buffer, the decoder and
+    // the renderer HUD must all agree on the active codec.
+    VideoCodec codec = codecPreference_ == CodecPreference::H264
+                           ? VideoCodec::H264
+                           : VideoCodec::H265;
+    bool videoReady = video_.init(renderer_, codec);
+    bool hevcInitFailed = false;
+    if (!videoReady && codecPreference_ == CodecPreference::Auto &&
+        codec == VideoCodec::H265) {
+        hevcInitFailed = true;
+        video_.shutdown();
+        codec = VideoCodec::H264;
+        videoReady = video_.init(renderer_, codec);
+    }
+    activeCodec_ = codec;
+    jitter_.set_codec(codec);
     jitter_.reset();
+    dkVideo_.set_video_codec(codec);
+    pendingCodec_ = -1;
+    videoBytes_ = 0;
+    netStatsTicks_ = 0;
+    netStatsBytes_ = 0;
+    netStatsNacks_ = 0;
+    netStatsPackets_ = 0;
+    {
+        int streamWidth = 1280;
+        int streamHeight = 720;
+        stream_dimensions(streamResolution_, streamWidth, streamHeight);
+        dkVideo_.set_bitrate_cap_mbps(
+            static_cast<int>(stream_bitrate(streamResolution_, streamWidth) /
+                             1000000));
+    }
     nextPresentCounter_ = 0;
     presentedSequence_ = 0;
 
@@ -435,11 +475,23 @@ void Engine::start(int appId, const std::string& preferredGateway) {
     });
     av_log_set_callback(&av_log_capture);
 
-    video_.init(renderer_);
+    if (hevcInitFailed) log("hevc decoder unavailable; fell back to h264");
+    log(std::string("video decoder ") + (videoReady ? "ready" : "FAILED") +
+        " codec=" + video_codec_label(codec) +
+        " (preference=" +
+        (codecPreference_ == CodecPreference::Auto ? "auto"
+         : codecPreference_ == CodecPreference::H265 ? "h265" : "h264") +
+        ")");
     audio_.init();
     sharedFrame_ = av_frame_alloc();
     presentFrame_ = av_frame_alloc();
     sharedFrameValid_ = false;
+
+    if (!videoReady) {
+        fail(gnx::i18n::tr("No se pudo abrir el decodificador de video.",
+                           "Could not open the video decoder."));
+        return;
+    }
 
     state_ = EngineState::StartingSession;
     set_status(gnx::i18n::tr("Solicitando una maquina a Boosteroid...", "Requesting a machine from Boosteroid..."));
@@ -503,7 +555,7 @@ void Engine::stop() {
     }
 }
 
-void Engine::worker() {
+Engine::SessionResult Engine::run_session() {
     ZERODROID::StreamSessionConfig config;
     log("launch appId=" + std::to_string(appId_));
     if (!api_.startStreamingSession(
@@ -511,12 +563,12 @@ void Engine::worker() {
                 log("api| " + message);
                 set_status(message);
             })) {
-        if (quit_) return;
+        if (quit_) return SessionResult::Fatal;
         fail(api_.lastError().empty() ? gnx::i18n::tr("No se pudo iniciar el juego.", "Could not start the game.")
                                      : api_.lastError());
-        return;
+        return SessionResult::Fatal;
     }
-    if (quit_) return;
+    if (quit_) return SessionResult::Fatal;
     sessionId_ = config.sessionId;
     log("sessionId=" + sessionId_ + " assignedGateway=" +
         (config.assignedGateway.empty() ? "no" : "yes") +
@@ -524,7 +576,7 @@ void Engine::worker() {
         " legacyQueries=" +
         std::to_string(config.sessionQueries.size()) + " gateways=" +
         std::to_string(config.gateways.size()));
-    if (!connect_gateway(config)) return;
+    if (!connect_gateway(config)) return SessionResult::Fatal;
 
     bool peerRequested = false;
     bool announcedController = false;
@@ -549,7 +601,7 @@ void Engine::worker() {
             }
         } else if (!socketError.empty() && !quit_) {
             fail(socketError);
-            return;
+            return SessionResult::Fatal;
         }
 
         const uint64_t controlNow = SDL_GetTicks64();
@@ -567,6 +619,7 @@ void Engine::worker() {
         }
         const int measuredPing = control_.last_ping_ms();
         if (measuredPing >= 0) pingMs_ = measuredPing;
+        update_net_stats(controlNow);
         if (controllerId_.load() <= 0 &&
             (!announcedController ||
              controlNow - lastControllerAnnouncement >= 2000)) {
@@ -579,7 +632,7 @@ void Engine::worker() {
                 {"name", "1"}}).dump());
             log("controller registration requested name=1");
         }
-        if (state_ == EngineState::Failed) return;
+        if (state_ == EngineState::Failed) return SessionResult::Fatal;
 
         if (nativeMediaStarted_) {
             const uint64_t now = SDL_GetTicks64();
@@ -588,13 +641,13 @@ void Engine::worker() {
                 fail(gotVideoPacket_
                          ? gnx::i18n::tr("Llegan paquetes UDP, pero no se pudo reconstruir el video.", "UDP packets arrive, but video could not be reconstructed.")
                          : gnx::i18n::tr("El gateway nativo conecto, pero no envio video UDP.", "The native gateway connected, but sent no UDP video."));
-                return;
+                return SessionResult::NoVideo;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
         if (peerRequested && !peer_) {
-            if (!setup_peer()) return;
+            if (!setup_peer()) return SessionResult::Fatal;
         }
 
         if (peer_) {
@@ -632,7 +685,7 @@ void Engine::worker() {
             if (peerState == PEER_CONNECTION_FAILED ||
                 peerState == PEER_CONNECTION_DISCONNECTED) {
                 fail(gnx::i18n::tr("La conexion WebRTC con el gateway fallo.", "The WebRTC connection to the gateway failed."));
-                return;
+                return SessionResult::Fatal;
             }
             if (now - lastConsent > 2000) {
                 lastConsent = now;
@@ -653,13 +706,13 @@ void Engine::worker() {
             if (state_ == EngineState::WaitingForVideo &&
                 now - connectedAt > 30000 && !gotFrame_) {
                 fail(gnx::i18n::tr("WebRTC conecto, pero Boosteroid no envio video.", "WebRTC connected, but Boosteroid sent no video."));
-                return;
+                return SessionResult::NoVideo;
             }
             if (!drained) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } else {
             if (SDL_GetTicks64() - connectedAt > 20000 && !peerRequested) {
                 fail(gnx::i18n::tr("El gateway no solicito iniciar WebRTC.", "The gateway did not request WebRTC startup."));
-                return;
+                return SessionResult::Fatal;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
@@ -668,6 +721,99 @@ void Engine::worker() {
         state_ = EngineState::Stopped;
         set_status(gnx::i18n::tr("La sesion termino.", "The session ended."));
     }
+    return SessionResult::Completed;
+}
+
+// Runs one streaming session and, when the user chose Auto and the H.265
+// session never produced a frame, retries once with H.264 on the same VM.
+void Engine::worker() {
+    bool codecRetried = false;
+    for (;;) {
+        const SessionResult result = run_session();
+        if (result != SessionResult::NoVideo || quit_ || codecRetried ||
+            codecPreference_ != CodecPreference::Auto ||
+            activeCodec_.load() != VideoCodec::H265) {
+            return;
+        }
+        codecRetried = true;
+        log("no video with h265; retrying the session with h264");
+        if (!prepare_codec_fallback()) return;
+    }
+}
+
+// Tear the failed session down and ask the decode thread to reopen the decoder
+// as H.264. Runs on the worker thread; never joins the worker or decode thread.
+bool Engine::prepare_codec_fallback() {
+    control_.close();
+    stop_native_udp();
+    destroy_peer();
+    sessionId_.clear();
+    gatewayHost_.clear();
+    gatewayApiBase_.clear();
+    peerId_.clear();
+    {
+        std::lock_guard<std::mutex> lock(videoMutex_);
+        videoQueue_.clear();
+    }
+    gotFrame_ = false;
+    gotVideoPacket_ = false;
+    gotAudioPacket_ = false;
+    gotAccessUnit_ = false;
+    presentedFirstFrame_ = false;
+    channelAssociationReady_ = false;
+    peerState_ = PEER_CONNECTION_NEW;
+    controllerId_ = -1;
+    pingMs_ = -1;
+    dataChannelOpened_ = false;
+    nativeMediaStarted_ = false;
+    nativeStartedTicks_ = 0;
+    lastMediaTicks_ = 0;
+    lastKeyframeRequestMs_ = 0;
+    padInitialized_ = false;
+    inputLogged_ = false;
+    remoteCandidates_.clear();
+    nextCandidatePoll_ = 0;
+    videoBytes_ = 0;
+    netStatsTicks_ = 0;
+    netStatsBytes_ = 0;
+    netStatsNacks_ = 0;
+    netStatsPackets_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(nativeMutex_);
+        nativeUdpHost_.clear();
+        nativeKeyHex_.clear();
+        nativeVideoPort_ = 0;
+        nativeAudioPort_ = 0;
+        nativeGroups_.clear();
+    }
+
+    activeCodec_ = VideoCodec::H264;
+    jitter_.set_codec(VideoCodec::H264);
+    jitter_.reset();
+    dkVideo_.set_video_codec(VideoCodec::H264);
+
+    // The decode thread is the only owner of video_ while streaming, so the
+    // reopen is handed to it and we wait for the swap to be consumed.
+    pendingCodec_ = static_cast<int>(VideoCodec::H264);
+    videoCv_.notify_all();
+    for (int i = 0; i < 400 && pendingCodec_.load() >= 0 && !quit_; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (quit_) return false;
+    if (pendingCodec_.load() >= 0) {
+        fail(gnx::i18n::tr("No se pudo reiniciar el decodificador.",
+                           "Could not restart the video decoder."));
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(statusMutex_);
+        error_.clear();
+    }
+    state_ = EngineState::StartingSession;
+    set_status(gnx::i18n::tr("Reintentando en H.264...",
+                             "Retrying with H.264..."));
+    return true;
 }
 
 bool Engine::connect_gateway(const ZERODROID::StreamSessionConfig& config) {
@@ -1040,8 +1186,10 @@ void Engine::handle_native_video_packet(const uint8_t* data, size_t size) {
                           plaintext.begin() + payloadBytes);
     }
     if (accessUnit.empty()) return;
+    videoBytes_ += accessUnit.size();
     if (!gotAccessUnit_.exchange(true)) {
-        log("first complete native H264 access unit bytes=" +
+        log(std::string("first complete native ") +
+            video_codec_label(activeCodec_.load()) + " access unit bytes=" +
             std::to_string(accessUnit.size()));
     }
     {
@@ -1087,7 +1235,7 @@ bool Engine::setup_peer() {
             ? nullptr : iceEntries[i].credential.c_str();
     }
     peerConfig.audio_codec = CODEC_OPUS;
-    peerConfig.video_codec = CODEC_H264;
+    peerConfig.video_codec = CODEC_H265;
     peerConfig.datachannel = DATA_CHANNEL_STRING;
     peerConfig.onaudiotrack = &Engine::on_audio;
     peerConfig.onvideotrack = &Engine::on_video;
@@ -1280,8 +1428,10 @@ void Engine::handle_control_message(const std::string& raw) {
             {"type", "stream"}, {"action", "status"}, {"value", "ok"},
             {"params", {
                 {"type", "androidTV"}, {"ver", "v.2.5.10.tv"},
-                {"gpu", "Tegra X1"}, {"proto", 2}, {"codec", "h264"},
-                {"framerate_max", 60},
+                {"gpu", "Tegra X1"}, {"proto", 2},
+                {"codec", activeCodec_.load() == VideoCodec::H265 ? "h265"
+                                                                  : "h264"},
+                {"framerate_max", stream_fps()},
                 {"bitrate_max", stream_bitrate(streamResolution_, streamWidth)},
                 {"hdr", false}}}}).dump());
         return;
@@ -1501,6 +1651,7 @@ void Engine::send_gamepad(HidAnalogStickState left,
 void Engine::on_video(uint8_t* data, size_t size, void* user) {
     auto* self = static_cast<Engine*>(user);
     self->lastMediaTicks_ = SDL_GetTicks64();
+    self->videoBytes_ += size;
     if (!self->gotVideoPacket_.exchange(true)) {
         self->log("first video RTP packet bytes=" + std::to_string(size));
     }
@@ -1509,8 +1660,9 @@ void Engine::on_video(uint8_t* data, size_t size, void* user) {
         data, size, SDL_GetTicks64(),
         [self](const uint8_t* accessUnit, size_t bytes, uint32_t timestamp) {
             if (!self->gotAccessUnit_.exchange(true)) {
-                self->log("first complete H264 access unit bytes=" +
-                          std::to_string(bytes));
+                self->log(std::string("first complete ") +
+                          video_codec_label(self->activeCodec_.load()) +
+                          " access unit bytes=" + std::to_string(bytes));
             }
             {
                 std::lock_guard<std::mutex> lock(self->videoMutex_);
@@ -1576,16 +1728,36 @@ void Engine::on_channel_message(char* data, size_t size, void* user,
 void Engine::decode_loop() {
     while (!quit_) {
         VideoAccessUnit unit;
+        int pendingCodec = -1;
+        bool haveUnit = false;
         {
             std::unique_lock<std::mutex> lock(videoMutex_);
             videoCv_.wait_for(lock, std::chrono::milliseconds(20), [this] {
-                return quit_.load() || !videoQueue_.empty();
+                return quit_.load() || !videoQueue_.empty() ||
+                       pendingCodec_.load() >= 0;
             });
             if (quit_) break;
-            if (videoQueue_.empty()) continue;
-            unit = std::move(videoQueue_.front());
-            videoQueue_.pop_front();
+            pendingCodec = pendingCodec_.exchange(-1);
+            if (pendingCodec < 0 && !videoQueue_.empty()) {
+                unit = std::move(videoQueue_.front());
+                videoQueue_.pop_front();
+                haveUnit = true;
+            }
         }
+        if (pendingCodec >= 0) {
+            // Codec fallback: video_ is owned by this thread while streaming,
+            // so the worker hands the reopen over instead of touching it.
+            const VideoCodec codec =
+                pendingCodec == static_cast<int>(VideoCodec::H265)
+                    ? VideoCodec::H265
+                    : VideoCodec::H264;
+            video_.shutdown();
+            const bool ok = video_.init(renderer_, codec);
+            log(std::string("decoder reopened codec=") +
+                video_codec_label(codec) + (ok ? " ok" : " FAILED"));
+            continue;
+        }
+        if (!haveUnit) continue;
         const bool decoded =
             video_.decode(unit.data.data(), unit.data.size());
         const bool decodeError = video_.take_error();
@@ -1714,6 +1886,42 @@ bool Engine::take_rumble(RumbleCommand& out) {
     out = rumble_;
     rumblePending_ = false;
     return true;
+}
+
+// Feed the performance HUD once per second: measured video bitrate, an
+// estimate of retransmission loss (NACKs per received packet) and the depth of
+// the decode queue in milliseconds.
+void Engine::update_net_stats(uint64_t nowMs) {
+    const uint64_t bytes = videoBytes_.load();
+    const VideoJitterBuffer::Stats stats = jitter_.stats();
+    if (netStatsTicks_ == 0) {
+        netStatsTicks_ = nowMs;
+        netStatsBytes_ = bytes;
+        netStatsNacks_ = stats.nacks;
+        netStatsPackets_ = stats.packets;
+        return;
+    }
+    const uint64_t elapsed = nowMs - netStatsTicks_;
+    if (elapsed < 1000) return;
+    const float mbps = static_cast<float>(bytes - netStatsBytes_) * 8.0f /
+                       (static_cast<float>(elapsed) / 1000.0f) / 1000000.0f;
+    const uint32_t packets = stats.packets - netStatsPackets_;
+    const uint32_t nacks = stats.nacks - netStatsNacks_;
+    const float loss = packets
+                           ? 100.0f * static_cast<float>(nacks) /
+                                 static_cast<float>(packets)
+                           : 0.0f;
+    size_t queued = 0;
+    {
+        std::lock_guard<std::mutex> lock(videoMutex_);
+        queued = videoQueue_.size();
+    }
+    const int bufferMs = static_cast<int>(queued) * 1000 / stream_fps();
+    dkVideo_.set_net_stats(mbps, loss, bufferMs);
+    netStatsTicks_ = nowMs;
+    netStatsBytes_ = bytes;
+    netStatsNacks_ = stats.nacks;
+    netStatsPackets_ = stats.packets;
 }
 
 void Engine::log(const std::string& line) {

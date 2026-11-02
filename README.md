@@ -3,15 +3,26 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.8 provides QR login, a controller-first game library,
-native H.264 video, Opus audio and complete controller input.
+homebrew. Version 0.8.9 provides QR login, a controller-first game library,
+native H.265/HEVC video with automatic H.264 fallback, Opus audio and complete
+controller input.
 
 > [!IMPORTANT]
 > ZERODROID is a beta and is not affiliated with or endorsed by Boosteroid or
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.8
+## New in v0.8.9
+
+- Streaming now uses H.265/HEVC (RFC 7798 over WebRTC, NVDEC/nvtegra
+  zero-copy), with H.264 as automatic fallback.
+- New Settings -> Advanced section (collapsible): video codec (Auto / H.265 /
+  H.264) and FPS limit (Auto / 30 / 60). Auto prefers H.265 and retries the
+  session once with H.264 if no frame arrives.
+- The in-game performance overlay now shows the negotiated codec and the
+  measured/target bitrate.
+
+## Included from v0.8.8
 
 - Added 720HQ (20 Mbps) and 1080HQ (30 Mbps) quality modes.
 - Added left-stick navigation for the library and Settings.
@@ -108,7 +119,8 @@ Application data is stored only under `sdmc:/switch/ZERODROID/`.
 
 - C++17 application built with devkitA64 and libnx.
 - SDL2 library and login UI; deko3d video presentation while streaming.
-- FFmpeg/libavcodec H.264 decoding and Opus audio playback.
+- FFmpeg/libavcodec H.265/HEVC decoding (NVDEC via the nvtegra hwaccel) and
+  Opus audio playback.
 - libpeer, WebRTC data channels, SRTP and SCTP for the streaming transport.
 - Device-code QR authentication; the resulting session remains on the SD card.
 - No analytics, advertising, referral links or telemetry.

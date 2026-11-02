@@ -74,7 +74,7 @@ struct StreamSessionConfig {
     std::vector<StreamGateway> gateways;
     std::string accessToken;
     std::string authDataToken;
-    std::string preferredCodec{"h264"};
+    std::string preferredCodec{"h265"};
 };
 
 class BoosteroidAPI {
