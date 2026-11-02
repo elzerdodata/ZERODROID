@@ -3,7 +3,7 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.4 provides QR login, a controller-first game library,
+homebrew. Version 0.8.5 provides QR login, a controller-first game library,
 native H.264 video, Opus audio and complete controller input.
 
 > [!IMPORTANT]
@@ -11,7 +11,15 @@ native H.264 video, Opus audio and complete controller input.
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.4
+## New in v0.8.5
+
+- Purple touchpad-style virtual mouse during streaming.
+- Quick tap sends a left click; long press sends a right click.
+- The cursor starts at the centre of the screen and hides after 10 seconds
+  without touch input.
+- The build output is now named `ZERODROID.nro`.
+
+## Included from v0.8.4
 
 - The touch Xbox Guide/Home button and the stick-click combo now open the Xbox
   Game Bar through Boosteroid's Ctrl+L shortcut.
@@ -64,6 +72,8 @@ not include or install custom firmware.
 - **X in the library:** add or remove the selected game from Favorites.
 - **R3 in the library:** refresh the Boosteroid library.
 - **Two dots during streaming:** open the touch settings panel.
+- **Touchpad during streaming:** move the purple virtual mouse. A quick tap
+  sends a left click and a long press sends a right click.
 - **Ping in the stream panel:** show or hide the latency badge; it starts off
   in every new session.
 - **Touch Xbox symbol:** open Xbox Game Bar/Guide.
@@ -91,7 +101,7 @@ and produces the NRO:
 DOCKER_BUILDKIT=1 docker build --output type=local,dest=dist .
 ```
 
-The resulting file is `dist/ZERODROID_v<version>.nro`.
+The resulting file is `dist/ZERODROID.nro`.
 
 For a native build, install the standard devkitPro Switch toolchain and Switch
 portlibs. The WebRTC dependency bundle can be built reproducibly with Docker:

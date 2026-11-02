@@ -18,7 +18,7 @@ usrsctp, mbedtls), and compiles the NRO:
 
 ```bash
 DOCKER_BUILDKIT=1 docker build --output type=local,dest=dist .
-# dist/ZERODROID_v<APP_VERSION>.nro
+# dist/ZERODROID.nro
 ```
 
 Native builds still work: run `cd switch && bash deps/build-switch.sh` to build
@@ -28,8 +28,8 @@ script with `--container`, which builds in-place without nested Docker.
 
 - `deps/build-switch.sh` pins libpeer to commit `9319aa4...`; the Switch patch
   only applies to that revision. Regenerate the patches before bumping the pin.
-- Output is `switch/ZERODROID_v<APP_VERSION>.nro`; `APP_VERSION` and `TARGET` are
-  set in `switch/Makefile`. Keep the README/CHANGELOG in sync on releases.
+- Output is `switch/ZERODROID.nro`; `APP_VERSION` and `TARGET` are set in
+  `switch/Makefile`. Keep the README/CHANGELOG in sync on releases.
 - `make all` also compiles `switch/shaders/*.glsl` with `uam` into ignored
   `switch/romfs/shaders/*.dksh`. Use `make shaders` for shader-only changes.
 - The Makefile only adds `src/switch/stream` when `deps/switch/lib/libpeer.a`

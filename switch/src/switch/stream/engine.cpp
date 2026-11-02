@@ -368,6 +368,12 @@ void Engine::start(int appId, const std::string& preferredGateway) {
     inputCommand_ = 0;
     guidePressed_ = false;
     pingMs_ = -1;
+    mouseX_ = 0.5f;
+    mouseY_ = 0.5f;
+    mouseVisible_ = false;
+    mouseButtonDown_ = -1;
+    mouseReleaseAt_ = 0;
+    dkVideo_.set_virtual_mouse_cursor(mouseX_, mouseY_, mouseVisible_);
     lastMediaTicks_ = 0;
     nativeMediaStarted_ = false;
     nativeStartedTicks_ = 0;
@@ -492,7 +498,7 @@ void Engine::worker() {
 
     bool peerRequested = false;
     bool announcedController = false;
-    bool announcedKeyboard = false;
+    bool announcedInputClasses = false;
     uint64_t lastControllerAnnouncement = 0;
     uint64_t lastPingRequest = 0;
     uint64_t connectedAt = SDL_GetTicks64();
@@ -517,12 +523,17 @@ void Engine::worker() {
         }
 
         const uint64_t controlNow = SDL_GetTicks64();
-        if (!announcedKeyboard) {
-            announcedKeyboard = true;
-            // Register the keyboard input class so the gateway accepts the
-            // Ctrl+L shortcut used by the Xbox Guide/Home button.
+        if (!announcedInputClasses) {
+            announcedInputClasses = true;
+            // Register keyboard and mouse so the gateway accepts the Ctrl+L
+            // Xbox Game Bar shortcut and the virtual touchpad pointer.
             send_control_json(nlohmann::json({
                 {"type", "keyboard"}, {"action", "connected"}}).dump());
+            send_control_json(nlohmann::json({
+                {"type", "mouse"}, {"action", "connected"},
+                {"LeftBtnState", false},
+                {"MiddleBtnState", false},
+                {"RightBtnState", false}}).dump());
         }
         if (controlNow - lastPingRequest >= 2000) {
             lastPingRequest = controlNow;
@@ -1327,6 +1338,46 @@ void Engine::send_guide_shortcut(bool pressed) {
     }
 }
 
+void Engine::virtual_mouse_move(float dx, float dy) {
+    constexpr float kSensitivity = 1.8f;
+    mouseX_ = std::clamp(mouseX_ + dx * kSensitivity / 1920.0f, 0.0f, 1.0f);
+    mouseY_ = std::clamp(mouseY_ + dy * kSensitivity / 1080.0f, 0.0f, 1.0f);
+    mouseVisible_ = true;
+    dkVideo_.set_virtual_mouse_cursor(mouseX_, mouseY_, true);
+    if (!control_.connected()) return;
+    send_input_json({{"type", "mouse"}, {"action", "move"},
+                     {"X", mouseX_}, {"Y", mouseY_},
+                     {"offsetX", dx * kSensitivity},
+                     {"offsetY", dy * kSensitivity},
+                     {"isVisible", true}});
+}
+
+void Engine::virtual_mouse_click(int button) {
+    if (button < 0 || !control_.connected()) return;
+    if (mouseButtonDown_ >= 0) {
+        send_input_json({{"type", "mouse"}, {"action", "button"},
+                         {"btn", mouseButtonDown_}, {"isPressed", false}});
+        mouseButtonDown_ = -1;
+    }
+    send_input_json({{"type", "mouse"}, {"action", "button"},
+                     {"btn", button}, {"isPressed", true}});
+    mouseButtonDown_ = button;
+    mouseReleaseAt_ = SDL_GetTicks64() + 60;
+    log("virtual mouse click button=" + std::to_string(button));
+}
+
+void Engine::virtual_mouse_hide() {
+    if (!mouseVisible_) return;
+    mouseVisible_ = false;
+    dkVideo_.set_virtual_mouse_cursor(mouseX_, mouseY_, false);
+    if (control_.connected()) {
+        send_input_json({{"type", "mouse"}, {"action", "move"},
+                         {"X", mouseX_}, {"Y", mouseY_},
+                         {"offsetX", 0.0f}, {"offsetY", 0.0f},
+                         {"isVisible", false}});
+    }
+}
+
 void Engine::send_gamepad(HidAnalogStickState left,
                           HidAnalogStickState right, u64 buttons) {
     const int id = controllerId_.load();
@@ -1570,6 +1621,12 @@ bool Engine::begin_deko_output() {
 void Engine::end_deko_output() { dkVideo_.shutdown(); }
 
 void Engine::pump_video() {
+    if (mouseButtonDown_ >= 0 &&
+        SDL_GetTicks64() >= mouseReleaseAt_) {
+        send_input_json({{"type", "mouse"}, {"action", "button"},
+                         {"btn", mouseButtonDown_}, {"isPressed", false}});
+        mouseButtonDown_ = -1;
+    }
     if (!dkVideo_.initialized() || !gotFrame_) return;
     constexpr double kDisplayHz = 59.94;
     const double interval =

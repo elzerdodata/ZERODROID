@@ -1,5 +1,12 @@
 # ZERODROID changelog
 
+## v0.8.5 - Virtual mouse
+
+- Added a purple touchpad-style virtual mouse during streaming.
+- A quick tap sends a left click; a long press sends a right click.
+- The cursor starts at the centre and hides after 10 seconds without touch.
+- Renamed the build output to ZERODROID.nro.
+
 ## v0.8.4 - Xbox Game Bar shortcut
 
 - Fixed the touch Xbox Guide/Home button and the stick-click combo to open the

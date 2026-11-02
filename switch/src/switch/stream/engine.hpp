@@ -57,6 +57,11 @@ public:
     // libnx state -> Boosteroid's Android TV controller protocol.
     void send_gamepad(HidAnalogStickState left, HidAnalogStickState right,
                       u64 buttons);
+
+    // Touchpad-style virtual mouse. deltas are in 1920x1080 design pixels.
+    void virtual_mouse_move(float dx, float dy);
+    void virtual_mouse_click(int button);
+    void virtual_mouse_hide();
     void set_xbox_face_layout(bool enabled) { xboxFaceLayout_ = enabled; }
     void set_guide_button_pressed(bool pressed) {
         guidePressed_ = pressed;
@@ -150,6 +155,11 @@ private:
     std::atomic<bool> xboxFaceLayout_{false};
     std::atomic<bool> guidePressed_{false};
     std::atomic<int> pingMs_{-1};
+    float mouseX_{0.5f};
+    float mouseY_{0.5f};
+    bool mouseVisible_{false};
+    int mouseButtonDown_{-1};
+    uint64_t mouseReleaseAt_{0};
     std::atomic<uint64_t> lastMediaTicks_{0};
     std::atomic<bool> nativeMediaStarted_{false};
     std::atomic<uint64_t> nativeStartedTicks_{0};

@@ -52,6 +52,9 @@ public:
     void set_quick_menu_state(const QuickMenuState& state);
     void set_ping_ms(int pingMs);
 
+    // Position the optional virtual mouse cursor (normalized screen coords).
+    void set_virtual_mouse_cursor(float x, float y, bool visible);
+
     // Compatibility helpers used by callers that only change one value.
     void set_sharpness(int level) {
         QuickMenuState next = quick_state_;
@@ -136,6 +139,7 @@ private:
     void blit_text(const char* s, int x, int y);  // white text onto hud_pixels_
     void rasterize_guide();            // compose Guide/Home touch button
     void rasterize_quick_menu();       // compose dots + expanded picture panel
+    void rasterize_cursor();           // compose purple virtual mouse cursor
     void blit_quick_text(const char* s, int x, int y);
     // The render queue is asynchronous. Keep every NVDEC surface referenced
     // until the swapchain gives its framebuffer slot back to us, which proves
@@ -245,6 +249,19 @@ private:
     void* quick_cpu_ = nullptr;
     std::vector<uint32_t> quick_pixels_;
     bool quick_dirty_ = true;
+
+    // Optional virtual mouse cursor. It uses its own small texture and a
+    // per-framebuffer vertex slot because its position changes every frame.
+    static constexpr uint32_t kCursorTexW = 96;
+    static constexpr uint32_t kCursorTexH = 96;
+    dk::UniqueMemBlock cursor_memblock_;
+    dk::Image cursor_image_;
+    dk::ImageDescriptor cursor_desc_;
+    void* cursor_cpu_ = nullptr;
+    std::vector<uint32_t> cursor_pixels_;
+    float cursor_x_ = 0.5f;
+    float cursor_y_ = 0.5f;
+    bool cursor_visible_ = false;
 };
 
 }  // namespace gnx::stream

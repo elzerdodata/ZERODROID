@@ -222,6 +222,10 @@ bool point_in_rect(int x, int y, const gnx::stream::QuickRect& rect) {
            y >= rect.y && y < rect.y + rect.h;
 }
 
+constexpr uint64_t kVirtualMouseLongPressMs = 550;
+constexpr uint64_t kVirtualMouseHideMs = 10000;
+constexpr int kVirtualMouseMoveThreshold = 24;
+
 // Touch controller for the in-stream two-dot menu. Returns true when the tap
 // belongs to the panel. A tap outside closes it and remains available to the
 // independent Guide/Home target.
@@ -431,10 +435,14 @@ int main(int argc, char* argv[]) {
     bool launchPanel = false;
     bool dekoStreaming = false;
     bool touchWasDown = false;
+    bool touchOnUi = false;
+    bool touchMoved = false;
     int touchDownX = 0;
     int touchDownY = 0;
     int touchLastX = 0;
     int touchLastY = 0;
+    uint64_t touchDownAt = 0;
+    uint64_t lastTouchAt = SDL_GetTicks64();
     uint64_t guideTouchUntil = 0;
     std::string launchingTitle;
     int launchingGameId = 0;
@@ -578,40 +586,82 @@ int main(int argc, char* argv[]) {
                 hidGetTouchScreenStates(&touchState, 1) > 0 &&
                 touchState.count > 0;
             if (touching) {
+                lastTouchAt = SDL_GetTicks64();
                 const int x = touchState.touches[0].x * gnx::gfx::kWidth / 1280;
                 const int y = touchState.touches[0].y * gnx::gfx::kHeight / 720;
                 if (!touchWasDown) {
                     touchDownX = x;
                     touchDownY = y;
+                    touchLastX = x;
+                    touchLastY = y;
+                    touchDownAt = SDL_GetTicks64();
+                    touchMoved = false;
+                    // While the quick panel is open, every touch is UI input.
+                    // The toggle and Guide button are UI even when it is closed.
+                    touchOnUi =
+                        quickMenuState.open ||
+                        point_in_rect(x, y, gnx::stream::kQuickToggleRect) ||
+                        point_in_rect(x, y, gnx::stream::kGuideButtonRect);
+                    if (!touchOnUi) {
+                        // First touchpad contact: show the cursor at centre.
+                        stream->virtual_mouse_move(0.0f, 0.0f);
+                    }
+                } else {
+                    const int moveX = x - touchLastX;
+                    const int moveY = y - touchLastY;
+                    if (!touchOnUi && (moveX != 0 || moveY != 0)) {
+                        if (std::abs(x - touchDownX) >
+                                kVirtualMouseMoveThreshold ||
+                            std::abs(y - touchDownY) >
+                                kVirtualMouseMoveThreshold) {
+                            touchMoved = true;
+                        }
+                        stream->virtual_mouse_move(static_cast<float>(moveX),
+                                                   static_cast<float>(moveY));
+                    }
+                    touchLastX = x;
+                    touchLastY = y;
                 }
                 touchWasDown = true;
-                touchLastX = x;
-                touchLastY = y;
             } else if (touchWasDown) {
                 touchWasDown = false;
                 const int dx = std::abs(touchLastX - touchDownX);
                 const int dy = std::abs(touchLastY - touchDownY);
-                if (dx < 100 && dy < 100) {
-                    const bool wasOpen = quickMenuState.open;
-                    bool layoutChanged = false;
-                    const bool quickTouch = handle_stream_settings_touch(
-                        quickMenuState, touchLastX, touchLastY, layoutChanged);
-                    if (quickTouch || wasOpen != quickMenuState.open) {
-                        stream->set_quick_menu_state(quickMenuState);
+                if (touchOnUi) {
+                    if (dx < 100 && dy < 100) {
+                        const bool wasOpen = quickMenuState.open;
+                        bool layoutChanged = false;
+                        const bool quickTouch =
+                            handle_stream_settings_touch(
+                                quickMenuState, touchLastX, touchLastY,
+                                layoutChanged);
+                        if (quickTouch || wasOpen != quickMenuState.open) {
+                            stream->set_quick_menu_state(quickMenuState);
+                        }
+                        if (layoutChanged) {
+                            serverSettings.xboxFaceLayout =
+                                quickMenuState.xboxFaceLayout;
+                            stream->set_xbox_face_layout(
+                                serverSettings.xboxFaceLayout);
+                            save_server_settings(serverSettings);
+                        }
+                        if (!quickTouch && point_in_rect(
+                                touchLastX, touchLastY,
+                                gnx::stream::kGuideButtonRect)) {
+                            guideTouchUntil = SDL_GetTicks64() + 160;
+                        }
                     }
-                    if (layoutChanged) {
-                        serverSettings.xboxFaceLayout =
-                            quickMenuState.xboxFaceLayout;
-                        stream->set_xbox_face_layout(
-                            serverSettings.xboxFaceLayout);
-                        save_server_settings(serverSettings);
-                    }
-                    if (!quickTouch && point_in_rect(
-                            touchLastX, touchLastY,
-                            gnx::stream::kGuideButtonRect)) {
-                        guideTouchUntil = SDL_GetTicks64() + 160;
-                    }
+                } else if (!touchMoved && dx < kVirtualMouseMoveThreshold &&
+                           dy < kVirtualMouseMoveThreshold) {
+                    const uint64_t heldMs =
+                        SDL_GetTicks64() - touchDownAt;
+                    stream->virtual_mouse_click(
+                        heldMs >= kVirtualMouseLongPressMs ? 2 : 0);
                 }
+            }
+
+            if (SDL_GetTicks64() - lastTouchAt >= kVirtualMouseHideMs) {
+                stream->virtual_mouse_hide();
             }
 
             const bool guidePressed = SDL_GetTicks64() < guideTouchUntil;

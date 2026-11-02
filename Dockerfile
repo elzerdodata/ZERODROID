@@ -5,7 +5,7 @@
 #
 #   DOCKER_BUILDKIT=1 docker build --output type=local,dest=dist .
 #
-# The resulting NRO is written to dist/ZERODROID_v<version>.nro.
+# The resulting NRO is written to dist/ZERODROID.nro.
 
 FROM devkitpro/devkita64:latest AS build
 

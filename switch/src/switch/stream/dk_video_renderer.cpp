@@ -43,6 +43,12 @@ constexpr uint32_t kVtxOff = 0x800;           // quad vertex buffer
 constexpr uint32_t kHudVtxOff = 0x880;        // HUD overlay corner quad
 constexpr uint32_t kGuideVtxOff = 0x900;      // top-right Guide/Home touch button
 constexpr uint32_t kQuickVtxOff = 0x980;      // two-dot handle + quick panel
+constexpr uint32_t kCursorVtxOff = 0xA00;     // virtual mouse (one slot each)
+constexpr uint32_t kCursorVtxStride = 0x100;
+constexpr float kCursorDisplayW = 64.0f;      // design-space pixels
+constexpr float kCursorDisplayH = 64.0f;
+constexpr float kCursorHotspotU = 4.0f / 96.0f;
+constexpr float kCursorHotspotV = 2.0f / 96.0f;
 
 struct Vertex {
     float position[3];
@@ -100,7 +106,7 @@ struct Transformation {
     alignas(16) float motion_data[4];  // x=blend factor, y=enabled
 };
 
-static_assert(7 * sizeof(DkImageDescriptor) <= kImageSlotStride,
+static_assert(8 * sizeof(DkImageDescriptor) <= kImageSlotStride,
               "image descriptors overlap image slot stride");
 static_assert(sizeof(Transformation) == 144, "std140 Transformation");
 static_assert(kFrameSlots == 3, "renderer slot count must match kFbNum");
@@ -162,6 +168,12 @@ void DkVideoRenderer::set_ping_ms(int pingMs) {
     if (next == ping_ms_) return;
     ping_ms_ = next;
     if (quick_state_.ping) quick_dirty_ = true;
+}
+
+void DkVideoRenderer::set_virtual_mouse_cursor(float x, float y, bool visible) {
+    cursor_x_ = std::clamp(x, 0.0f, 1.0f);
+    cursor_y_ = std::clamp(y, 0.0f, 1.0f);
+    cursor_visible_ = visible;
 }
 
 void DkVideoRenderer::logf(const char* fmt, ...) {
@@ -393,6 +405,30 @@ bool DkVideoRenderer::init() {
         guide_desc_.initialize(guide_image_);
     }
 
+    // Virtual mouse cursor texture. It is small and alpha-blended like the
+    // Guide/quick overlays; only its vertex quad changes with the touchpad.
+    cursor_pixels_.assign(kCursorTexW * kCursorTexH, 0);
+    {
+        uint32_t stride = kCursorTexW * 4;
+        dk::ImageLayout cursor_layout;
+        dk::ImageLayoutMaker{dev_}
+            .setFlags(DkImageFlags_UsageLoadStore | DkImageFlags_Usage2DEngine |
+                      DkImageFlags_PitchLinear)
+            .setFormat(DkImageFormat_RGBA8_Unorm)
+            .setDimensions(kCursorTexW, kCursorTexH)
+            .setPitchStride(stride)
+            .initialize(cursor_layout);
+        uint32_t sz = (cursor_layout.getSize() + 0xFFF) & ~0xFFFu;
+        cursor_memblock_ = dk::MemBlockMaker{dev_, sz}
+                               .setFlags(DkMemBlockFlags_CpuUncached |
+                                         DkMemBlockFlags_GpuCached |
+                                         DkMemBlockFlags_Image)
+                               .create();
+        cursor_cpu_ = cursor_memblock_.getCpuAddr();
+        cursor_image_.initialize(cursor_layout, cursor_memblock_, 0);
+        cursor_desc_.initialize(cursor_image_);
+    }
+
     // Two-dot handle + expanded quick settings panel. Keeping both in one
     // transparent texture makes open/close a cheap CPU re-rasterization and a
     // single overlay draw call.
@@ -429,6 +465,7 @@ bool DkVideoRenderer::init() {
     }
     rasterize_guide();
     rasterize_quick_menu();
+    rasterize_cursor();
 
     initialized_ = true;
     logf("deko3d: initialized (fb %ux%u, %u framebuffers)", fb_width_, fb_height_,
@@ -465,6 +502,10 @@ void DkVideoRenderer::shutdown() {
     quick_memblock_ = nullptr;
     quick_cpu_ = nullptr;
     quick_pixels_.clear();
+    cursor_memblock_ = nullptr;
+    cursor_cpu_ = nullptr;
+    cursor_pixels_.clear();
+    cursor_visible_ = false;
     dev_ = nullptr;
     initialized_ = false;
     frame_w_ = frame_h_ = 0;
@@ -764,6 +805,56 @@ void DkVideoRenderer::rasterize_guide() {
     if (guide_cpu_)
         std::memcpy(guide_cpu_, guide_pixels_.data(), guide_pixels_.size() * 4);
     guide_rasterized_pressed_ = guide_pressed_;
+}
+
+void DkVideoRenderer::rasterize_cursor() {
+    auto rgba = [](uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+        return static_cast<uint32_t>(r) | (static_cast<uint32_t>(g) << 8) |
+               (static_cast<uint32_t>(b) << 16) |
+               (static_cast<uint32_t>(a) << 24);
+    };
+    std::fill(cursor_pixels_.begin(), cursor_pixels_.end(), 0);
+
+    // Classic arrow pointer, tip near the top-left so the quad's hotspot lines
+    // up with the virtual cursor position.
+    struct Point { float x, y; };
+    const Point points[] = {
+        {4, 2}, {4, 68}, {23, 53}, {37, 86}, {52, 80}, {38, 47}, {61, 47},
+    };
+    constexpr int kPointCount = sizeof(points) / sizeof(points[0]);
+    auto inside = [&](float px, float py) {
+        bool result = false;
+        for (int i = 0, j = kPointCount - 1; i < kPointCount; j = i++) {
+            const Point& a = points[i];
+            const Point& b = points[j];
+            if (((a.y > py) != (b.y > py)) &&
+                (px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x)) {
+                result = !result;
+            }
+        }
+        return result;
+    };
+
+    const uint32_t fill = rgba(167, 139, 250, 255);
+    const uint32_t border = rgba(245, 243, 255, 255);
+    for (int y = 0; y < static_cast<int>(kCursorTexH); ++y) {
+        for (int x = 0; x < static_cast<int>(kCursorTexW); ++x) {
+            const float px = x + 0.5f;
+            const float py = y + 0.5f;
+            uint32_t color = 0;
+            if (inside(px, py)) {
+                color = fill;
+            } else if (inside(px - 1.5f, py) || inside(px + 1.5f, py) ||
+                       inside(px, py - 1.5f) || inside(px, py + 1.5f)) {
+                color = border;
+            }
+            if (color) cursor_pixels_[y * kCursorTexW + x] = color;
+        }
+    }
+    if (cursor_cpu_) {
+        std::memcpy(cursor_cpu_, cursor_pixels_.data(),
+                    cursor_pixels_.size() * sizeof(uint32_t));
+    }
 }
 
 void DkVideoRenderer::rasterize_quick_menu() {
@@ -1152,6 +1243,27 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     const uint32_t image_off =
         kImageSlotOff + static_cast<uint32_t>(slot) * kImageSlotStride;
 
+    const uint32_t cursor_vtx_off =
+        kCursorVtxOff + static_cast<uint32_t>(slot) * kCursorVtxStride;
+    if (cursor_visible_) {
+        const float width = 2.0f * kCursorDisplayW / 1920.0f;
+        const float height = 2.0f * kCursorDisplayH / 1080.0f;
+        const float left =
+            (2.0f * cursor_x_ - 1.0f) - kCursorHotspotU * width;
+        const float top =
+            (1.0f - 2.0f * cursor_y_) + kCursorHotspotV * height;
+        const float right = left + width;
+        const float bottom = top - height;
+        const Vertex cursor_quad[4] = {
+            {{left, top, 0.0f}, {0.0f, 0.0f}},
+            {{left, bottom, 0.0f}, {0.0f, 1.0f}},
+            {{right, bottom, 0.0f}, {1.0f, 1.0f}},
+            {{right, top, 0.0f}, {1.0f, 0.0f}},
+        };
+        std::memcpy(static_cast<uint8_t*>(data_cpu_) + cursor_vtx_off,
+                    cursor_quad, sizeof(cursor_quad));
+    }
+
     // Write sampler + image descriptors through the command buffer (canonical
     // deko3d path) so the writes are ordered on the GPU timeline before use.
     cmdbuf_.pushData(data_gpu_ + kSamplerOff, &sampler_desc_,
@@ -1169,6 +1281,9 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     // Image descriptor #4 = two-dot quick menu handle + optional panel.
     cmdbuf_.pushData(data_gpu_ + image_off + 4 * sizeof(DkImageDescriptor),
                      &quick_desc_, sizeof(DkImageDescriptor));
+    // Image descriptor #7 = optional virtual mouse cursor.
+    cmdbuf_.pushData(data_gpu_ + image_off + 7 * sizeof(DkImageDescriptor),
+                     &cursor_desc_, sizeof(DkImageDescriptor));
     // Image descriptors #5/#6 = the next decoded frame used by Motion. When
     // Motion is inactive they alias the current frame, keeping all samplers
     // valid without requiring a separate shader variant.
@@ -1201,7 +1316,7 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     cmdbuf_.bindDepthStencilState(depth_stencil);
 
     cmdbuf_.bindSamplerDescriptorSet(data_gpu_ + kSamplerOff, 1);
-    cmdbuf_.bindImageDescriptorSet(data_gpu_ + image_off, 7);
+    cmdbuf_.bindImageDescriptorSet(data_gpu_ + image_off, 8);
     cmdbuf_.barrier(DkBarrier_None,
                     DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
@@ -1246,6 +1361,13 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(3, 0)});
     cmdbuf_.bindVtxBuffer(0, data_gpu_ + kGuideVtxOff, sizeof(kGuideQuad));
     cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
+
+    if (cursor_visible_) {
+        cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(7, 0)});
+        cmdbuf_.bindVtxBuffer(0, data_gpu_ + cursor_vtx_off,
+                              sizeof(Vertex) * 4);
+        cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
+    }
 
     queue_.submitCommands(cmdbuf_.finishList());
     queue_.presentImage(swapchain_, slot);
