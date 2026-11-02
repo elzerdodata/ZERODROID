@@ -11,10 +11,10 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 APP_TITLE   := ZERODROID
 APP_AUTHOR  := Zero Data
-APP_VERSION := 0.8.2
+APP_VERSION := 0.8.3
 APP_ICON    := icon.jpg
 
-TARGET   := ZERODROID_v0.8.2
+TARGET   := ZERODROID_v0.8.3
 BUILD    := build-switch
 SOURCES  := src/core src/switch
 INCLUDES := src vendor deps/shim/include

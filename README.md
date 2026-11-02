@@ -3,7 +3,7 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.2 provides QR login, a controller-first game library,
+homebrew. Version 0.8.3 provides QR login, a controller-first game library,
 native H.264 video, Opus audio and complete controller input.
 
 > [!IMPORTANT]
@@ -11,7 +11,13 @@ native H.264 video, Opus audio and complete controller input.
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.2
+## New in v0.8.3
+
+- Optional in-stream ping display, hidden by default for a cleaner picture.
+- The ping badge and ping line in the performance HUD can now be toggled from
+  the touch settings panel.
+
+## Included from v0.8.2
 
 - Search the library with the native Nintendo Switch keyboard.
 - All, Favorites and Recently Played library tabs.
@@ -53,6 +59,8 @@ not include or install custom firmware.
 - **X in the library:** add or remove the selected game from Favorites.
 - **R3 in the library:** refresh the Boosteroid library.
 - **Two dots during streaming:** open the touch settings panel.
+- **Ping in the stream panel:** show or hide the latency badge; it starts off
+  in every new session.
 - **Touch Xbox symbol:** send Xbox Guide/Home.
 - **Press both sticks:** send Xbox Guide/Home without touch.
 - **L + R + Minus:** stop streaming and return to the library.

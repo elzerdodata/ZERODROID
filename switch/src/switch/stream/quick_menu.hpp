@@ -22,10 +22,10 @@ inline constexpr QuickRect kQuickToggleRect{1760, 8, 72, 72};
 inline constexpr QuickRect kGuideButtonRect{1840, 8, 72, 72};
 inline constexpr QuickRect kQuickPanelRect{1160, 104, 508, 716};
 
-inline constexpr int kQuickRowCount = 7;
-inline constexpr int kQuickRowFirstY = 172;
-inline constexpr int kQuickRowHeight = 58;
-inline constexpr int kQuickRowPitch = 64;
+inline constexpr int kQuickRowCount = 8;
+inline constexpr int kQuickRowFirstY = 164;
+inline constexpr int kQuickRowHeight = 54;
+inline constexpr int kQuickRowPitch = 58;
 
 inline constexpr QuickRect quick_row_rect(int row) {
     return {1180, kQuickRowFirstY + row * kQuickRowPitch, 468,
@@ -42,21 +42,23 @@ inline constexpr QuickRect quick_plus_rect(int row) {
     return {1584, r.y, 64, r.h};
 }
 
-inline constexpr QuickRect kQuickResetRect{1280, 744, 268, 54};
+inline constexpr QuickRect kQuickResetRect{1280, 736, 268, 54};
 
 enum QuickRow {
     QuickPerformance = 0,
-    QuickController = 1,
-    QuickBrightness = 2,
-    QuickContrast = 3,
-    QuickSaturation = 4,
-    QuickGamma = 5,
-    QuickSharpness = 6,
+    QuickPing = 1,
+    QuickController = 2,
+    QuickBrightness = 3,
+    QuickContrast = 4,
+    QuickSaturation = 5,
+    QuickGamma = 6,
+    QuickSharpness = 7,
 };
 
 struct QuickMenuState {
     bool open = false;
     bool performance = false;
+    bool ping = false;  // Off by default: the latency badge hurts immersion.
     bool xboxFaceLayout = false;
     int brightness = 0;   // -20..+20
     int contrast = 100;   // 70..130 percent

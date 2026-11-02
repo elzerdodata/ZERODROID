@@ -1,5 +1,11 @@
 # ZERODROID changelog
 
+## v0.8.3 - Optional ping display
+
+- Added an in-stream PING ON/OFF option to the touch settings panel.
+- The ping badge is hidden by default at the start of every streaming session.
+- Disabling ping also removes the ping line from the performance HUD.
+
 ## v0.8.2 - Library organization
 
 - Added native game search through the Nintendo Switch software keyboard.

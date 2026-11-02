@@ -245,6 +245,11 @@ bool handle_stream_settings_touch(gnx::stream::QuickMenuState& state,
         state.performance = !state.performance;
         changed = true;
     } else if (point_in_rect(
+                   x, y,
+                   gnx::stream::quick_row_rect(gnx::stream::QuickPing))) {
+        state.ping = !state.ping;
+        changed = true;
+    } else if (point_in_rect(
                    x, y, gnx::stream::quick_row_rect(
                              gnx::stream::QuickController))) {
         state.xboxFaceLayout = !state.xboxFaceLayout;
@@ -970,6 +975,7 @@ int main(int argc, char* argv[]) {
                 libraryNotice.clear();
                 launchPanel = true;
                 quickMenuState.open = false;
+                quickMenuState.ping = false;  // every new session starts hidden
                 quickMenuState.xboxFaceLayout =
                     serverSettings.xboxFaceLayout;
                 stream->set_xbox_face_layout(serverSettings.xboxFaceLayout);

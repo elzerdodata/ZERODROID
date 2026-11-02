@@ -149,6 +149,7 @@ void DkVideoRenderer::set_quick_menu_state(const QuickMenuState& state) {
     bool menu_changed =
         next.open != quick_state_.open ||
         next.performance != quick_state_.performance ||
+        next.ping != quick_state_.ping ||
         next.xboxFaceLayout != quick_state_.xboxFaceLayout || picture_changed;
     quick_state_ = next;
     hud_enabled_ = next.performance;
@@ -160,7 +161,7 @@ void DkVideoRenderer::set_ping_ms(int pingMs) {
     const int next = pingMs < 0 ? -1 : std::clamp(pingMs, 0, 9999);
     if (next == ping_ms_) return;
     ping_ms_ = next;
-    quick_dirty_ = true;
+    if (quick_state_.ping) quick_dirty_ = true;
 }
 
 void DkVideoRenderer::logf(const char* fmt, ...) {
@@ -823,25 +824,28 @@ void DkVideoRenderer::rasterize_quick_menu() {
     circle(toggle.x + 23, toggle.y + toggle.h / 2, 6, dot);
     circle(toggle.x + 49, toggle.y + toggle.h / 2, 6, dot);
 
-    // Compact always-visible latency meter. The WebSocket ping is a true
-    // round trip to the active streaming gateway, not a guessed frame delay.
-    QuickRect ping_badge = local({1438, 12, 286, 64});
-    const uint32_t ping_color = ping_ms_ < 0
-        ? edge
-        : ping_ms_ < 60 ? rgba(139, 214, 164, 255)
-        : ping_ms_ < 120 ? rgba(251, 191, 36, 255)
-                         : rgba(248, 113, 113, 255);
-    fill(ping_badge.x, ping_badge.y, ping_badge.w, ping_badge.h,
-         rgba(24, 21, 34, 220));
-    frame(ping_badge.x, ping_badge.y, ping_badge.w, ping_badge.h, 2,
-          ping_color);
-    circle(ping_badge.x + 24, ping_badge.y + 32, 7, ping_color);
-    char ping_text[32];
-    if (ping_ms_ < 0)
-        std::snprintf(ping_text, sizeof(ping_text), "PING -- ms");
-    else
-        std::snprintf(ping_text, sizeof(ping_text), "PING %d ms", ping_ms_);
-    blit_quick_text(ping_text, ping_badge.x + 48, ping_badge.y + 13);
+    // Optional latency meter. The WebSocket ping is a true round trip to the
+    // active streaming gateway, not a guessed frame delay. It starts hidden so
+    // it does not break immersion; the in-stream menu can enable it.
+    if (quick_state_.ping) {
+        QuickRect ping_badge = local({1438, 12, 286, 64});
+        const uint32_t ping_color = ping_ms_ < 0
+            ? edge
+            : ping_ms_ < 60 ? rgba(139, 214, 164, 255)
+            : ping_ms_ < 120 ? rgba(251, 191, 36, 255)
+                             : rgba(248, 113, 113, 255);
+        fill(ping_badge.x, ping_badge.y, ping_badge.w, ping_badge.h,
+             rgba(24, 21, 34, 220));
+        frame(ping_badge.x, ping_badge.y, ping_badge.w, ping_badge.h, 2,
+              ping_color);
+        circle(ping_badge.x + 24, ping_badge.y + 32, 7, ping_color);
+        char ping_text[32];
+        if (ping_ms_ < 0)
+            std::snprintf(ping_text, sizeof(ping_text), "PING -- ms");
+        else
+            std::snprintf(ping_text, sizeof(ping_text), "PING %d ms", ping_ms_);
+        blit_quick_text(ping_text, ping_badge.x + 48, ping_badge.y + 13);
+    }
 
     if (quick_state_.open) {
         QuickRect menu = local(kQuickPanelRect);
@@ -850,8 +854,8 @@ void DkVideoRenderer::rasterize_quick_menu() {
         blit_quick_text("ZERODROID SETTINGS", menu.x + 20, menu.y + 16);
 
         const char* labels[kQuickRowCount] = {
-            "Performance", "Button layout", "Brightness", "Contrast", "Saturation",
-            "Gamma", "Sharpness"};
+            "Performance", "Ping", "Button layout", "Brightness", "Contrast",
+            "Saturation", "Gamma", "Sharpness"};
         const char* sharp_labels[4] = {"Off", "Low", "Medium", "High"};
 
         for (int row = 0; row < kQuickRowCount; ++row) {
@@ -866,6 +870,16 @@ void DkVideoRenderer::rasterize_quick_menu() {
                 frame(rr.x + 350, rr.y + 6, 104, rr.h - 12, 2,
                       quick_state_.performance ? accent : edge);
                 blit_quick_text(quick_state_.performance ? "ON" : "OFF",
+                                rr.x + 378, rr.y + 12);
+                continue;
+            }
+
+            if (row == QuickPing) {
+                fill(rr.x + 350, rr.y + 6, 104, rr.h - 12,
+                     quick_state_.ping ? active : rgba(42, 49, 60, 240));
+                frame(rr.x + 350, rr.y + 6, 104, rr.h - 12, 2,
+                      quick_state_.ping ? accent : edge);
+                blit_quick_text(quick_state_.ping ? "ON" : "OFF",
                                 rr.x + 378, rr.y + 12);
                 continue;
             }
@@ -907,7 +921,7 @@ void DkVideoRenderer::rasterize_quick_menu() {
             blit_quick_text(value, rr.x + 300, rr.y + 12);
         }
 
-        QuickRect warning_box = local({1180, 632, 468, 88});
+        QuickRect warning_box = local({1180, 636, 468, 84});
         fill(warning_box.x, warning_box.y, warning_box.w, warning_box.h,
              rgba(45, 39, 61, 245));
         frame(warning_box.x, warning_box.y, warning_box.w, warning_box.h, 2,
@@ -979,19 +993,36 @@ void DkVideoRenderer::update_hud(AVFrame* frame) {
     }
     char buf[220];
     if (net_valid_.load(std::memory_order_relaxed)) {
-        std::snprintf(buf, sizeof(buf),
-                      "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\n"
-                      "%.1f Mbps  loss %.1f%%\nbuf %dms  ping %dms",
-                      frame->width, frame->height, fps_, output_fps_,
-                      generated_fps_,
-                      net_mbps_.load(std::memory_order_relaxed),
-                      net_loss_.load(std::memory_order_relaxed),
-                      net_buffer_ms_.load(std::memory_order_relaxed), ping_ms_);
-    } else {
+        if (quick_state_.ping) {
+            std::snprintf(buf, sizeof(buf),
+                          "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%.1f Mbps  loss %.1f%%\nbuf %dms  ping %dms",
+                          frame->width, frame->height, fps_, output_fps_,
+                          generated_fps_,
+                          net_mbps_.load(std::memory_order_relaxed),
+                          net_loss_.load(std::memory_order_relaxed),
+                          net_buffer_ms_.load(std::memory_order_relaxed),
+                          ping_ms_);
+        } else {
+            std::snprintf(buf, sizeof(buf),
+                          "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%.1f Mbps  loss %.1f%%\nbuf %dms",
+                          frame->width, frame->height, fps_, output_fps_,
+                          generated_fps_,
+                          net_mbps_.load(std::memory_order_relaxed),
+                          net_loss_.load(std::memory_order_relaxed),
+                          net_buffer_ms_.load(std::memory_order_relaxed));
+        }
+    } else if (quick_state_.ping) {
         std::snprintf(buf, sizeof(buf),
                       "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
                       frame->width, frame->height, fps_, output_fps_,
                       generated_fps_, ping_ms_);
+    } else {
+        std::snprintf(buf, sizeof(buf),
+                      "%dx%d\nsrc %.0f  out %.0f  gen %.0f fps",
+                      frame->width, frame->height, fps_, output_fps_,
+                      generated_fps_);
     }
     if (hud_text_cache_ == buf) return;  // unchanged -> keep the current texture
     hud_text_cache_ = buf;
