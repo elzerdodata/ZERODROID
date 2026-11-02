@@ -49,7 +49,7 @@ void stream_dimensions(int mode, int& width, int& height) {
 int stream_bitrate(int width) {
     // Match the resolution requested from the gateway; the service uses
     // bitrate_max as the encoder ceiling for this session.
-    return width >= 1920 ? 25000000 : 12000000;
+    return width >= 1920 ? 25000000 : 15000000;
 }
 
 void av_log_capture(void*, int level, const char* format, va_list args) {
@@ -393,6 +393,7 @@ void Engine::start(int appId, const std::string& preferredGateway) {
     inputCommand_ = 0;
     guidePressed_ = false;
     pingMs_ = -1;
+    lastKeyframeRequestMs_ = 0;
     mouseX_ = 0.5f;
     mouseY_ = 0.5f;
     mouseVisible_ = false;
@@ -1622,13 +1623,14 @@ void Engine::decode_loop() {
             unit = std::move(videoQueue_.front());
             videoQueue_.pop_front();
         }
-        if (!video_.decode(unit.data.data(), unit.data.size())) {
-            if (video_.take_error()) {
-                std::lock_guard<std::mutex> lock(peerMutex_);
-                request_keyframe_locked();
-            }
-            continue;
+        const bool decoded =
+            video_.decode(unit.data.data(), unit.data.size());
+        const bool decodeError = video_.take_error();
+        if (decodeError || video_.waiting_keyframe()) {
+            std::lock_guard<std::mutex> lock(peerMutex_);
+            request_keyframe_locked();
         }
+        if (!decoded) continue;
         {
             std::lock_guard<std::mutex> lock(frameMutex_);
             av_frame_unref(sharedFrame_);
@@ -1695,7 +1697,14 @@ void Engine::pump_video() {
 }
 
 void Engine::request_keyframe_locked() {
-    if (peer_) peer_connection_request_keyframe(peer_);
+    const uint64_t now = SDL_GetTicks64();
+    const uint64_t last = lastKeyframeRequestMs_.load();
+    if (last != 0 && now - last < 500) return;
+    lastKeyframeRequestMs_.store(now);
+    if (peer_) {
+        peer_connection_request_keyframe(peer_);
+        log("requested keyframe");
+    }
 }
 
 void Engine::destroy_peer() {

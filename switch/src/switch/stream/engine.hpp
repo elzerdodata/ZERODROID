@@ -157,6 +157,7 @@ private:
     std::atomic<bool> xboxFaceLayout_{false};
     std::atomic<bool> guidePressed_{false};
     std::atomic<int> pingMs_{-1};
+    std::atomic<uint64_t> lastKeyframeRequestMs_{0};
     int streamResolution_{0};
     float mouseX_{0.5f};
     float mouseY_{0.5f};

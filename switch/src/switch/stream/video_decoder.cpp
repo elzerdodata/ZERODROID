@@ -24,10 +24,32 @@ enum AVPixelFormat pick_hw_format(AVCodecContext* context,
 }
 #endif
 
+bool contains_idr(const uint8_t* data, size_t size) {
+    for (size_t i = 0; i + 3 < size; ++i) {
+        size_t start_code = 0;
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+            start_code = 3;
+        } else if (i + 4 < size && data[i] == 0 && data[i + 1] == 0 &&
+                   data[i + 2] == 0 && data[i + 3] == 1) {
+            start_code = 4;
+        }
+        if (!start_code) continue;
+        if (i + start_code < size &&
+            (data[i + start_code] & 0x1f) == 5) {
+            return true;
+        }
+        i += start_code - 1;
+    }
+    return false;
+}
+
 }  // namespace
 
 bool VideoDecoder::init(SDL_Renderer* renderer) {
     renderer_ = renderer;
+    error_ = false;
+    waiting_keyframe_ = false;
+    waiting_since_ms_ = 0;
 
     const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) return false;
@@ -83,20 +105,45 @@ bool VideoDecoder::ensure_texture(SDL_Renderer* renderer, int width,
 }
 
 bool VideoDecoder::decode(const uint8_t* data, size_t size) {
+    // After a decode failure, predictive frames only spread the corruption.
+    // Discard everything until a clean IDR arrives and resets the references.
+    // If the encoder ignores keyframe requests for too long, resume anyway:
+    // holding the last good frame forever looks like a frozen/menu image.
+    if (waiting_keyframe_) {
+        const uint64_t now = SDL_GetTicks64();
+        if (!contains_idr(data, size)) {
+            if (now - waiting_since_ms_ < 4000) return false;
+            waiting_keyframe_ = false;
+        } else {
+            waiting_keyframe_ = false;
+        }
+    }
+
     av_packet_unref(packet_);
     if (av_new_packet(packet_, static_cast<int>(size)) != 0) return false;
     std::memcpy(packet_->data, data, size);
 
     if (avcodec_send_packet(context_, packet_) != 0) {
         error_ = true;
+        waiting_keyframe_ = true;
+        waiting_since_ms_ = SDL_GetTicks64();
+        // NVTEGRA output surfaces may still be referenced by deko3d. Flushing
+        // the hardware decoder here causes green/pink frames and stale menu
+        // pictures, so only reset the software backend.
+        if (!hw_device_) avcodec_flush_buffers(context_);
         return false;
     }
 
     bool rendered = false;
     while (avcodec_receive_frame(context_, frame_) == 0) {
         if (frame_->decode_error_flags != 0 ||
-            (frame_->flags & AV_FRAME_FLAG_CORRUPT))
+            (frame_->flags & AV_FRAME_FLAG_CORRUPT)) {
             error_ = true;
+            waiting_keyframe_ = true;
+            waiting_since_ms_ = SDL_GetTicks64();
+            if (!hw_device_) avcodec_flush_buffers(context_);
+            break;
+        }
 #ifdef __SWITCH__
         // Zero-copy: keep the raw NVTEGRA surface for the deko3d renderer -- no
         // GPU->CPU transfer, no software colour conversion (both of which

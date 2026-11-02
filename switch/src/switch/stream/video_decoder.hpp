@@ -34,6 +34,9 @@ public:
         return e;
     }
 
+    // True while the decoder is discarding predictive frames until a new IDR.
+    bool waiting_keyframe() const { return waiting_keyframe_; }
+
     SDL_Texture* texture() { return texture_; }
     // Latest decoded frame. On Switch this is a held reference to the raw
     // NVTEGRA hardware surface (kept un-transferred for zero-copy deko3d
@@ -60,6 +63,8 @@ private:
     AVFrame* held_frame_ = nullptr;  // Switch: surviving ref of the last frame
     AVPacket* packet_ = nullptr;
     bool error_ = false;
+    bool waiting_keyframe_ = false;
+    uint64_t waiting_since_ms_ = 0;
     const char* last_pixfmt_ = "?";
     std::vector<uint8_t> i420_;  // scratch for packed I420 upload
 };

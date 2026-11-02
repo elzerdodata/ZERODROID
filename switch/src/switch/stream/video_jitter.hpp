@@ -68,6 +68,8 @@ private:
     std::deque<Frame> frames_;         // pending frames, ascending timestamp
     std::optional<uint32_t> last_ts_;  // timestamp of the last emitted frame
     bool waiting_keyframe_ = true;
+    uint64_t last_keyframe_ms_ = 0;
+    uint64_t last_keyframe_request_ms_ = 0;
 
     // Global sequence tracking for NACK + receiver-report stats.
     bool have_seq_ = false;

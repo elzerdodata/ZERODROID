@@ -13,6 +13,8 @@ constexpr size_t kMaxAccessUnitBytes = 2 * 1024 * 1024;
 // predictive chain and froze output until a new IDR. The added delay applies
 // only while a frame is already incomplete; healthy frames still emit at once.
 constexpr uint64_t kHoldMs = 200;
+constexpr uint64_t kKeyframeIntervalMs = 4000;
+constexpr uint64_t kKeyframeRequestCooldownMs = 1000;
 constexpr size_t kMaxFrames = 32;  // safety cap on buffered frames
 const uint8_t kStartCode[4] = {0x00, 0x00, 0x00, 0x01};
 
@@ -112,6 +114,8 @@ void VideoJitterBuffer::reset() {
     frames_.clear();
     last_ts_.reset();
     waiting_keyframe_ = true;
+    last_keyframe_ms_ = 0;
+    last_keyframe_request_ms_ = 0;
     stats_ = {};
     have_seq_ = false;
     max_seq_ = 0;
@@ -252,14 +256,16 @@ void VideoJitterBuffer::receive(const uint8_t* rtp, size_t len, uint64_t now_ms,
             const uint32_t timestamp = front.timestamp;
             last_ts_ = timestamp;
             frames_.pop_front();
+            const bool keyframe = has_keyframe(au);
             if (waiting_keyframe_) {
-                if (!has_keyframe(au)) {  // still no clean IDR -> keep dropping
+                if (!keyframe) {  // still no clean IDR -> keep dropping
                     *want_keyframe = true;
                     stats_.resyncs++;
                     continue;
                 }
                 waiting_keyframe_ = false;
             }
+            if (keyframe) last_keyframe_ms_ = now_ms;
             stats_.frames++;
             stats_.last_frame_bytes = static_cast<uint32_t>(au.size());
             emit(au.data(), au.size(), timestamp);
@@ -277,6 +283,16 @@ void VideoJitterBuffer::receive(const uint8_t* rtp, size_t len, uint64_t now_ms,
             continue;
         }
         break;  // wait for more packets / retransmit
+    }
+
+    // Recovery watchdog: even if a lost reference frame was never detected as
+    // an incomplete RTP frame, force periodic IDRs so concealed corruption
+    // cannot remain on screen until the game happens to change scene.
+    if (!waiting_keyframe_ && last_keyframe_ms_ != 0 &&
+        now_ms - last_keyframe_ms_ >= kKeyframeIntervalMs &&
+        now_ms - last_keyframe_request_ms_ >= kKeyframeRequestCooldownMs) {
+        *want_keyframe = true;
+        last_keyframe_request_ms_ = now_ms;
     }
 }
 
