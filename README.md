@@ -3,7 +3,7 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.6 provides QR login, a controller-first game library,
+homebrew. Version 0.8.7 provides QR login, a controller-first game library,
 native H.264 video, Opus audio and complete controller input.
 
 > [!IMPORTANT]
@@ -11,7 +11,15 @@ native H.264 video, Opus audio and complete controller input.
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.6
+## New in v0.8.7
+
+- More resilient video recovery after packet loss and decode errors.
+- Broken predictive frames are discarded until a fresh IDR instead of showing
+  persistent corruption.
+- Reduced green/pink artifacts and stale frames after NVDEC errors.
+- 720p streaming bitrate raised to 15 Mbps.
+
+## Included from v0.8.6
 
 - Added Leave Session to the in-game touch settings, returning to the library.
 - Added streaming resolution selection: Automatic, 720p or 1080p.

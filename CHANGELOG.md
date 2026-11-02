@@ -1,5 +1,15 @@
 # ZERODROID changelog
 
+## v0.8.7 - Video recovery
+
+- Reworked video recovery after RTP loss and decode errors.
+- Predictive frames are dropped until a clean IDR, preventing persistent
+  corruption.
+- Avoided flushing the NVTEGRA decoder, removing green/pink artifacts and stale
+  menu frames after recovery.
+- Added a bounded wait for an IDR so video cannot freeze indefinitely.
+- Raised the 720p bitrate ceiling to 15 Mbps.
+
 ## v0.8.6 - Streaming settings and release automation
 
 - Added Leave Session to the in-game touch settings.
