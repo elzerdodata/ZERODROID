@@ -115,6 +115,7 @@ private:
     void handle_control_message(const std::string& raw);
     void send_control_json(const std::string& payload);
     void send_input_json(nlohmann::json payload);
+    void send_guide_shortcut(bool pressed);
     void set_status(const std::string& value);
     void fail(const std::string& value);
     void request_keyframe_locked();

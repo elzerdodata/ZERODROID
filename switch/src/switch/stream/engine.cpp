@@ -492,6 +492,7 @@ void Engine::worker() {
 
     bool peerRequested = false;
     bool announcedController = false;
+    bool announcedKeyboard = false;
     uint64_t lastControllerAnnouncement = 0;
     uint64_t lastPingRequest = 0;
     uint64_t connectedAt = SDL_GetTicks64();
@@ -516,6 +517,13 @@ void Engine::worker() {
         }
 
         const uint64_t controlNow = SDL_GetTicks64();
+        if (!announcedKeyboard) {
+            announcedKeyboard = true;
+            // Register the keyboard input class so the gateway accepts the
+            // Ctrl+L shortcut used by the Xbox Guide/Home button.
+            send_control_json(nlohmann::json({
+                {"type", "keyboard"}, {"action", "connected"}}).dump());
+        }
         if (controlNow - lastPingRequest >= 2000) {
             lastPingRequest = controlNow;
             control_.send_ping();
@@ -1283,8 +1291,9 @@ void Engine::send_input_json(nlohmann::json payload) {
     const bool sent = control_.send_text(controlPayload.dump());
     if (sent && !inputLogged_) {
         inputLogged_ = true;
-        log("first controller input sent action=" +
-            payload.value("action", std::string("?")) +
+        log("first input sent type=" +
+            payload.value("type", std::string("?")) +
+            " action=" + payload.value("action", std::string("?")) +
             " native=" + (native ? std::string("yes") : std::string("no")));
     }
 
@@ -1299,6 +1308,22 @@ void Engine::send_input_json(nlohmann::json payload) {
         peer_connection_datachannel_send_text_sid(
             peer_, const_cast<char*>(channelPayload.data()),
             channelPayload.size(), 0);
+    }
+}
+
+void Engine::send_guide_shortcut(bool pressed) {
+    auto send_key = [&](int code, bool down) {
+        send_input_json({{"type", "keyboard"}, {"action", "button"},
+                         {"code", code}, {"isPressed", down}});
+    };
+    // Boosteroid opens the Xbox Game Bar on Ctrl+L. Keep the chord held while
+    // the Guide input is active so the remote side sees both keys together.
+    if (pressed) {
+        send_key(0x11 /* VK_CONTROL */, true);
+        send_key(0x4C /* 'L' */, true);
+    } else {
+        send_key(0x4C /* 'L' */, false);
+        send_key(0x11 /* VK_CONTROL */, false);
     }
 }
 
@@ -1350,6 +1375,12 @@ void Engine::send_gamepad(HidAnalogStickState left,
     // Android can report digital trigger KeyEvents in addition to axes.
     sendButton(HidNpadButton_ZL, 10);
     sendButton(HidNpadButton_ZR, 11);
+    if (guide != previousGuide_) {
+        // Boosteroid opens the Xbox Game Bar with Ctrl+L, not with the
+        // controller Guide button. Keep the chord down for as long as the
+        // touch Xbox symbol or the stick-click combo is active.
+        send_guide_shortcut(guide);
+    }
     if (!padInitialized_ || guide != previousGuide_) {
         send_input_json({{"type", "controller"}, {"action", "button"},
                          {"id", id}, {"button", 16},

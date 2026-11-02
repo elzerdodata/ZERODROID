@@ -1,5 +1,10 @@
 # ZERODROID changelog
 
+## v0.8.4 - Xbox Game Bar shortcut
+
+- Fixed the touch Xbox Guide/Home button and the stick-click combo to open the
+  Xbox Game Bar using Boosteroid's Ctrl+L shortcut.
+
 ## v0.8.3 - Optional ping display
 
 - Added an in-stream PING ON/OFF option to the touch settings panel.
