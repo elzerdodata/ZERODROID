@@ -15,6 +15,11 @@ enum class VideoCodec { H264, H265 };
 // and falls back to H.264 when the HEVC decoder or the stream fails.
 enum class CodecPreference { Auto, H265, H264 };
 
+// What the user picked in Settings -> Advanced -> Transport.
+// Auto prefers Boosteroid's native UDP transport (proto: 2, Reed-Solomon FEC).
+// NativeUdp forces proto: 2, and WebRtc forces proto: 1 (libpeer WebRTC).
+enum class TransportPreference { Auto = 0, NativeUdp = 1, WebRtc = 2 };
+
 inline const char* video_codec_label(VideoCodec codec) {
     return codec == VideoCodec::H265 ? "H.265" : "H.264";
 }

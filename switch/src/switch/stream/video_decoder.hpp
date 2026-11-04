@@ -42,6 +42,14 @@ public:
     // (H.264 IDR / HEVC IDR or CRA).
     bool waiting_keyframe() const { return waiting_keyframe_; }
 
+    // Force the decoder to discard incoming predictive frames until a new IRAP.
+    // Called when an upstream transport detects unrecoverable frame loss
+    // (e.g. Native UDP Reed-Solomon group failure).
+    void force_keyframe_wait() {
+        waiting_keyframe_ = true;
+        waiting_since_ms_ = SDL_GetTicks64();
+    }
+
     SDL_Texture* texture() { return texture_; }
     // Latest decoded frame. On Switch this is a held reference to the raw
     // NVTEGRA hardware surface (kept un-transferred for zero-copy deko3d

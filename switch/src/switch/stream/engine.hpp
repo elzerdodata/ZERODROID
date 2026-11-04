@@ -72,6 +72,13 @@ public:
     void set_codec_preference(CodecPreference preference);
     // 0 = auto (current default), 1 = 30 fps, 2 = 60 fps.
     void set_fps_mode(int mode);
+    // Settings -> Advanced. Auto prefers Native UDP (proto: 2).
+    void set_transport_preference(TransportPreference preference);
+    TransportPreference transport_preference() const {
+        return transportPreference_;
+    }
+    // 0 = None/negotiating, 1 = Native UDP (proto: 2 / FEC), 2 = WebRTC
+    int active_transport() const { return activeTransport_.load(); }
     VideoCodec active_codec() const { return activeCodec_.load(); }
     int ping_ms() const { return pingMs_.load(); }
 
@@ -166,16 +173,24 @@ private:
     std::atomic<uint64_t> lastKeyframeRequestMs_{0};
     int streamResolution_{0};
     CodecPreference codecPreference_{CodecPreference::Auto};
+    TransportPreference transportPreference_{TransportPreference::Auto};
     std::atomic<VideoCodec> activeCodec_{VideoCodec::H265};
+    std::atomic<int> activeTransport_{0};  // 0 = none, 1 = Native UDP, 2 = WebRTC
     int fpsMode_{0};  // 0 = auto, 1 = 30, 2 = 60
     // Set by the worker to ask the decode thread (the only owner of video_)
     // to reopen the decoder with another codec. -1 = nothing pending.
     std::atomic<int> pendingCodec_{-1};
     std::atomic<uint64_t> videoBytes_{0};
+    std::atomic<uint32_t> nativePackets_{0};
+    std::atomic<uint32_t> nativeLostPackets_{0};
+    std::atomic<uint32_t> nativeFecRecovered_{0};
+    std::atomic<uint32_t> nativeDroppedFrames_{0};
     uint64_t netStatsTicks_{0};
     uint64_t netStatsBytes_{0};
     uint32_t netStatsNacks_{0};
     uint32_t netStatsPackets_{0};
+    uint32_t netStatsNativePackets_{0};
+    uint32_t netStatsNativeLost_{0};
     float mouseX_{0.5f};
     float mouseY_{0.5f};
     bool mouseVisible_{false};

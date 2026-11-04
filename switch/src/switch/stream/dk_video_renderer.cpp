@@ -997,9 +997,14 @@ void DkVideoRenderer::update_hud(AVFrame* frame) {
         generated_frames_ = 0;
         fps_tick_ = now;
     }
-    char buf[220];
+    char buf[240];
     const char* codec =
         codec_kind_.load(std::memory_order_relaxed) ? "H.265" : "H.264";
+    const int transport = transport_kind_.load(std::memory_order_relaxed);
+    const char* proto_tag =
+        transport == 1 ? " [NAT-UDP]" : transport == 2 ? " [WebRTC]" : "";
+    const char* loss_tag =
+        transport == 1 ? " (FEC)" : transport == 2 ? " (NACK)" : "";
     char bitrate[48];
     const float mbps = net_mbps_.load(std::memory_order_relaxed);
     const int cap = bitrate_cap_mbps_.load(std::memory_order_relaxed);
@@ -1011,32 +1016,32 @@ void DkVideoRenderer::update_hud(AVFrame* frame) {
     if (net_valid_.load(std::memory_order_relaxed)) {
         if (quick_state_.ping) {
             std::snprintf(buf, sizeof(buf),
-                          "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps\n"
-                          "%s  loss %.1f%%\nbuf %dms  ping %dms",
-                          frame->width, frame->height, codec, fps_, output_fps_,
-                          generated_fps_, bitrate,
-                          net_loss_.load(std::memory_order_relaxed),
+                          "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%s  loss %.1f%%%s\nbuf %dms  ping %dms",
+                          frame->width, frame->height, codec, proto_tag,
+                          fps_, output_fps_, generated_fps_, bitrate,
+                          net_loss_.load(std::memory_order_relaxed), loss_tag,
                           net_buffer_ms_.load(std::memory_order_relaxed),
                           ping_ms_);
         } else {
             std::snprintf(buf, sizeof(buf),
-                          "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps\n"
-                          "%s  loss %.1f%%\nbuf %dms",
-                          frame->width, frame->height, codec, fps_, output_fps_,
-                          generated_fps_, bitrate,
-                          net_loss_.load(std::memory_order_relaxed),
+                          "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%s  loss %.1f%%%s\nbuf %dms",
+                          frame->width, frame->height, codec, proto_tag,
+                          fps_, output_fps_, generated_fps_, bitrate,
+                          net_loss_.load(std::memory_order_relaxed), loss_tag,
                           net_buffer_ms_.load(std::memory_order_relaxed));
         }
     } else if (quick_state_.ping) {
         std::snprintf(buf, sizeof(buf),
-                      "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
-                      frame->width, frame->height, codec, fps_, output_fps_,
-                      generated_fps_, ping_ms_);
+                      "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
+                      frame->width, frame->height, codec, proto_tag,
+                      fps_, output_fps_, generated_fps_, ping_ms_);
     } else {
         std::snprintf(buf, sizeof(buf),
-                      "%dx%d  %s\nsrc %.0f  out %.0f  gen %.0f fps",
-                      frame->width, frame->height, codec, fps_, output_fps_,
-                      generated_fps_);
+                      "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps",
+                      frame->width, frame->height, codec, proto_tag,
+                      fps_, output_fps_, generated_fps_);
     }
     if (hud_text_cache_ == buf) return;  // unchanged -> keep the current texture
     hud_text_cache_ = buf;

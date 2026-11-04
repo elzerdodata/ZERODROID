@@ -3,7 +3,7 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.8.9 provides QR login, a controller-first game library,
+homebrew. Version 0.9.0 provides QR login, a controller-first game library,
 native H.265/HEVC video with automatic H.264 fallback, Opus audio and complete
 controller input.
 
@@ -12,17 +12,24 @@ controller input.
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.8.9
+## New in v0.9.0
 
-- Streaming now uses H.265/HEVC (RFC 7798 over WebRTC, NVDEC/nvtegra
-  zero-copy), with H.264 as automatic fallback.
-- New Settings -> Advanced section (collapsible): video codec (Auto / H.265 /
-  H.264) and FPS limit (Auto / 30 / 60). Auto prefers H.265 and retries the
-  session once with H.264 if no frame arrives.
-- The in-game performance overlay now shows the negotiated codec and the
-  measured/target bitrate.
+- Differentiation between WebRTC and Native UDP (proto: 2): custom Reed-Solomon
+  FEC loss tracking, prompt keyframe gating on packet recovery failure, and
+  active transport badges (`[NAT-UDP]` / `[WebRTC]`) with matching loss
+  metrics (`(FEC)` / `(NACK)`) in the HUD.
+- Network protocol selector in Settings -> Advanced (Auto / Native UDP / WebRTC).
 - Adaptive NACK retention window in the jitter buffer (scales with measured
   RTT instead of a fixed 200 ms timeout), speeding up packet-loss recovery.
+
+## Included from v0.8.9
+
+- Streaming in H.265/HEVC by default (RFC 7798 over WebRTC, NVDEC/nvtegra
+  zero-copy), with H.264 as automatic fallback.
+- New Settings -> Advanced section (collapsible): video codec (Auto / H.265 /
+  H.264) and FPS limit (Auto / 30 / 60) with disclosure arrow.
+- In-game performance overlay displaying the active video codec and measured/target
+  bitrate.
 
 ## Included from v0.8.8
 

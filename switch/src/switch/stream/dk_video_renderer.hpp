@@ -88,6 +88,10 @@ public:
     void set_bitrate_cap_mbps(int mbps) {
         bitrate_cap_mbps_.store(mbps, std::memory_order_relaxed);
     }
+    // 0 = Unknown/negotiating, 1 = Native UDP (proto: 2 / FEC), 2 = WebRTC
+    void set_transport_kind(int kind) {
+        transport_kind_.store(kind, std::memory_order_relaxed);
+    }
 
     // Bring up the deko3d device/swapchain. Call after SDL has released the
     // window. Returns false (and logs) on failure.
@@ -232,6 +236,7 @@ private:
     std::atomic<bool> net_valid_{false};
     std::atomic<int> codec_kind_{1};        // 1 = H.265, 0 = H.264
     std::atomic<int> bitrate_cap_mbps_{0};  // 0 = unknown
+    std::atomic<int> transport_kind_{0};    // 0 = unknown, 1 = NAT-UDP, 2 = WebRTC
 
     // Always-visible two-dot handle and its optional expanded quick panel.
     // One transparent RGBA texture covers both shapes and costs one overlay

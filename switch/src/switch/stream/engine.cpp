@@ -386,6 +386,10 @@ void Engine::set_fps_mode(int mode) {
     fpsMode_ = std::clamp(mode, 0, 2);
 }
 
+void Engine::set_transport_preference(TransportPreference preference) {
+    transportPreference_ = preference;
+}
+
 void Engine::start(int appId, const std::string& preferredGateway) {
     stop();
     appId_ = appId;
@@ -444,15 +448,23 @@ void Engine::start(int appId, const std::string& preferredGateway) {
         videoReady = video_.init(renderer_, codec);
     }
     activeCodec_ = codec;
+    activeTransport_ = 0;
     jitter_.set_codec(codec);
     jitter_.reset();
     dkVideo_.set_video_codec(codec);
+    dkVideo_.set_transport_kind(0);
     pendingCodec_ = -1;
     videoBytes_ = 0;
+    nativePackets_ = 0;
+    nativeLostPackets_ = 0;
+    nativeFecRecovered_ = 0;
+    nativeDroppedFrames_ = 0;
     netStatsTicks_ = 0;
     netStatsBytes_ = 0;
     netStatsNacks_ = 0;
     netStatsPackets_ = 0;
+    netStatsNativePackets_ = 0;
+    netStatsNativeLost_ = 0;
     {
         int streamWidth = 1280;
         int streamHeight = 720;
@@ -791,9 +803,17 @@ bool Engine::prepare_codec_fallback() {
     }
 
     activeCodec_ = VideoCodec::H264;
+    activeTransport_ = 0;
     jitter_.set_codec(VideoCodec::H264);
     jitter_.reset();
     dkVideo_.set_video_codec(VideoCodec::H264);
+    dkVideo_.set_transport_kind(0);
+    nativePackets_ = 0;
+    nativeLostPackets_ = 0;
+    nativeFecRecovered_ = 0;
+    nativeDroppedFrames_ = 0;
+    netStatsNativePackets_ = 0;
+    netStatsNativeLost_ = 0;
 
     // The decode thread is the only owner of video_ while streaming, so the
     // reopen is handed to it and we wait for the swap to be consumed.
@@ -917,6 +937,8 @@ bool Engine::start_native_udp(const std::string& host, int videoPort,
     }
     nativeStartedTicks_ = SDL_GetTicks64();
     nativeMediaStarted_ = true;
+    activeTransport_.store(1);
+    dkVideo_.set_transport_kind(1);
     state_ = EngineState::WaitingForVideo;
     set_status(gnx::i18n::tr("Canal nativo conectado. Esperando el primer fotograma...", "Native channel connected. Waiting for the first frame..."));
     log("native UDP ready videoLocalPort=" +
@@ -1122,6 +1144,7 @@ void Engine::handle_native_video_packet(const uint8_t* data, size_t size) {
     // a 2-byte plaintext length and one 1408-byte AES-CBC block.
     if (!data || size != 1420) return;
     lastMediaTicks_ = SDL_GetTicks64();
+    ++nativePackets_;
     if (!gotVideoPacket_.exchange(true)) {
         log("first native video UDP packet bytes=" + std::to_string(size));
     }
@@ -1170,7 +1193,22 @@ void Engine::handle_native_video_packet(const uint8_t* data, size_t size) {
         complete.received.begin(),
         complete.received.begin() + complete.dataPackets,
         [](bool value) { return value; });
-    if (!allOriginal && !recover_native_group(complete)) return;
+    if (!allOriginal) {
+        size_t missing = 0;
+        for (size_t i = 0; i < complete.dataPackets; ++i) {
+            if (!complete.received[i]) ++missing;
+        }
+        nativeLostPackets_ += static_cast<uint32_t>(missing);
+        if (!recover_native_group(complete)) {
+            ++nativeDroppedFrames_;
+            log("native UDP: Reed-Solomon FEC recovery failed (missing " +
+                std::to_string(missing) + " packets); dropping frame");
+            video_.force_keyframe_wait();
+            request_keyframe_locked();
+            return;
+        }
+        nativeFecRecovered_ += static_cast<uint32_t>(missing);
+    }
 
     std::vector<uint8_t> accessUnit;
     accessUnit.reserve(static_cast<size_t>(complete.dataPackets) * 1408);
@@ -1207,6 +1245,8 @@ void Engine::handle_native_video_packet(const uint8_t* data, size_t size) {
 }
 
 bool Engine::setup_peer() {
+    activeTransport_.store(2);
+    dkVideo_.set_transport_kind(2);
     state_ = EngineState::Negotiating;
     set_status(gnx::i18n::tr("Negociando video y audio WebRTC...", "Negotiating WebRTC video and audio..."));
     peerId_ = uuid_v4();
@@ -1427,16 +1467,21 @@ void Engine::handle_control_message(const std::string& raw) {
         int streamWidth = 1280;
         int streamHeight = 720;
         stream_dimensions(streamResolution_, streamWidth, streamHeight);
+        const int proto =
+            transportPreference_ == TransportPreference::WebRtc ? 1 : 2;
         send_control_json(nlohmann::json({
             {"type", "stream"}, {"action", "status"}, {"value", "ok"},
             {"params", {
                 {"type", "androidTV"}, {"ver", "v.2.5.10.tv"},
-                {"gpu", "Tegra X1"}, {"proto", 2},
+                {"gpu", "Tegra X1"}, {"proto", proto},
                 {"codec", activeCodec_.load() == VideoCodec::H265 ? "h265"
                                                                   : "h264"},
                 {"framerate_max", stream_fps()},
                 {"bitrate_max", stream_bitrate(streamResolution_, streamWidth)},
                 {"hdr", false}}}}).dump());
+        log("getstatus reply proto=" + std::to_string(proto) +
+            " codec=" + (activeCodec_.load() == VideoCodec::H265 ? "h265" : "h264") +
+            " fps=" + std::to_string(stream_fps()));
         return;
     }
     if (type == "controller" && action == "connected") {
@@ -1841,7 +1886,11 @@ void Engine::request_keyframe_locked() {
     lastKeyframeRequestMs_.store(now);
     if (peer_) {
         peer_connection_request_keyframe(peer_);
-        log("requested keyframe");
+        log("requested keyframe (webrtc pli)");
+    } else if (nativeMediaStarted_.load()) {
+        send_control_json(nlohmann::json({
+            {"type", "stream"}, {"action", "keyframe"}}).dump());
+        log("requested keyframe (native udp control)");
     }
 }
 
@@ -1892,28 +1941,45 @@ bool Engine::take_rumble(RumbleCommand& out) {
 }
 
 // Feed the performance HUD once per second: measured video bitrate, an
-// estimate of retransmission loss (NACKs per received packet) and the depth of
-// the decode queue in milliseconds.
+// estimate of packet loss (Reed-Solomon shards on Native UDP, NACKs on WebRTC)
+// and the depth of the decode queue in milliseconds.
 void Engine::update_net_stats(uint64_t nowMs) {
     const uint64_t bytes = videoBytes_.load();
-    const VideoJitterBuffer::Stats stats = jitter_.stats();
+    const int transport = activeTransport_.load();
     if (netStatsTicks_ == 0) {
         netStatsTicks_ = nowMs;
         netStatsBytes_ = bytes;
-        netStatsNacks_ = stats.nacks;
-        netStatsPackets_ = stats.packets;
+        netStatsNacks_ = jitter_.stats().nacks;
+        netStatsPackets_ = jitter_.stats().packets;
+        netStatsNativePackets_ = nativePackets_.load();
+        netStatsNativeLost_ = nativeLostPackets_.load();
         return;
     }
     const uint64_t elapsed = nowMs - netStatsTicks_;
     if (elapsed < 1000) return;
     const float mbps = static_cast<float>(bytes - netStatsBytes_) * 8.0f /
                        (static_cast<float>(elapsed) / 1000.0f) / 1000000.0f;
-    const uint32_t packets = stats.packets - netStatsPackets_;
-    const uint32_t nacks = stats.nacks - netStatsNacks_;
-    const float loss = packets
-                           ? 100.0f * static_cast<float>(nacks) /
-                                 static_cast<float>(packets)
-                           : 0.0f;
+
+    float loss = 0.0f;
+    if (transport == 1) {  // Native UDP (proto: 2, Reed-Solomon FEC)
+        const uint32_t pkts = nativePackets_.load() - netStatsNativePackets_;
+        const uint32_t lost = nativeLostPackets_.load() - netStatsNativeLost_;
+        loss = (pkts + lost > 0)
+                   ? (100.0f * static_cast<float>(lost) /
+                      static_cast<float>(pkts + lost))
+                   : 0.0f;
+    } else {  // WebRTC (RTP / NACK)
+        const VideoJitterBuffer::Stats stats = jitter_.stats();
+        const uint32_t packets = stats.packets - netStatsPackets_;
+        const uint32_t nacks = stats.nacks - netStatsNacks_;
+        loss = packets
+                   ? 100.0f * static_cast<float>(nacks) /
+                         static_cast<float>(packets)
+                   : 0.0f;
+        netStatsNacks_ = stats.nacks;
+        netStatsPackets_ = stats.packets;
+    }
+
     size_t queued = 0;
     {
         std::lock_guard<std::mutex> lock(videoMutex_);
@@ -1923,8 +1989,8 @@ void Engine::update_net_stats(uint64_t nowMs) {
     dkVideo_.set_net_stats(mbps, loss, bufferMs);
     netStatsTicks_ = nowMs;
     netStatsBytes_ = bytes;
-    netStatsNacks_ = stats.nacks;
-    netStatsPackets_ = stats.packets;
+    netStatsNativePackets_ = nativePackets_.load();
+    netStatsNativeLost_ = nativeLostPackets_.load();
 }
 
 void Engine::log(const std::string& line) {

@@ -1,10 +1,21 @@
 # ZERODROID changelog
 
-## v0.8.9 - H.265 and advanced streaming settings
+## v0.9.0 - WebRTC vs Native UDP and adaptive jitter recovery
 
-- Switched streaming to H.265/HEVC: the gateway handshake requests `h265`, the
-  WebRTC offer advertises `H265/90000` (payload type 104, RFC 7798) and the
-  NVDEC/nvtegra path decodes HEVC zero-copy into the existing deko3d renderer.
+- Adaptive NACK retention window in the jitter buffer: scales with measured RTT
+  (1.5x RTT + 15 ms, clamped to 40-200 ms) instead of a fixed 200 ms timeout,
+  accelerating packet-loss recovery on low-latency connections.
+- Differentiation between WebRTC and Native UDP (proto: 2):
+  - Added network protocol selector in Settings -> Advanced (Auto / Native UDP / WebRTC).
+  - In-stream performance overlay displays active transport badges (`[NAT-UDP]` / `[WebRTC]`)
+    and matching loss metrics (`(FEC)` / `(NACK)`).
+  - Native UDP now tracks real packet loss and Reed-Solomon shard recovery.
+  - Proactive NVDEC keyframe gating and WebSocket keyframe request if Reed-Solomon FEC recovery fails.
+
+## v0.8.9 - H.265 streaming and advanced settings
+
+- Switched streaming to H.265/HEVC by default (RFC 7798 over WebRTC, NVDEC/nvtegra
+  zero-copy), with H.264 as automatic fallback.
 - Added an RFC 7798 depacketizer (single NAL, AP and FU) and HEVC IRAP
   keyframe gating (NAL types 16-21) to the video jitter buffer.
 - Settings -> Advanced (collapsible): video codec (Auto / H.265 / H.264) and
@@ -12,9 +23,6 @@
   with H.264 when no frame arrives; Auto FPS keeps the previous 60 fps default.
 - The in-stream performance overlay now shows the negotiated codec and the
   measured/target bitrate.
-- Adaptive NACK retention window in the jitter buffer: scales with measured RTT
-  (1.5x RTT + 15 ms, clamped to 40-200 ms) instead of a fixed 200 ms timeout,
-  accelerating packet-loss recovery on low-latency connections.
 
 ## v0.8.8 - Quality modes and session reuse
 

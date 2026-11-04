@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 APP_TITLE   := ZERODROID
 APP_AUTHOR  := Zero Data
-APP_VERSION := 0.8.9
+APP_VERSION := 0.9.0
 APP_ICON    := icon.jpg
 
 TARGET   := ZERODROID

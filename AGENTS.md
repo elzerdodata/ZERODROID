@@ -67,15 +67,19 @@ script with `--container`, which builds in-place without nested Docker.
   HEVC IRAP NAL types 16-21 (never bare VPS/SPS/PPS). Changing the codec means
   updating all four places at once.
 - Settings -> Advanced selects the codec (`CodecPreference`: Auto / H.265 /
-  H.264, persisted as `codec` in `settings.json`) and the FPS limit (`fps`,
-  sent as `framerate_max` in the `getstatus` reply). Auto codec falls back to
-  H.264 when `video_.init()` fails, and the worker retries the session once
-  with H.264 when an H.265 session produces no frame. `Engine::worker()` runs
-  `run_session()` in a loop for that; the decoder reopen is handed to the
-  decode thread through `pendingCodec_` because only that thread owns
-  `VideoDecoder` while streaming.
-- The performance overlay (`QuickPerformance`) shows resolution, codec and
-  `measured/target Mbps`; `Engine::update_net_stats()` feeds it once per second.
+  H.264, persisted as `codec` in `settings.json`), the FPS limit (`fps`,
+  sent as `framerate_max` in the `getstatus` reply) and the network protocol
+  (`TransportPreference`: Auto / Native UDP / WebRTC, sent as `proto` 2 or 1
+  in the `getstatus` reply). Auto codec falls back to H.264 when `video_.init()`
+  fails, and the worker retries the session once with H.264 when an H.265
+  session produces no frame. `Engine::worker()` runs `run_session()` in a loop
+  for that; the decoder reopen is handed to the decode thread through
+  `pendingCodec_` because only that thread owns `VideoDecoder` while streaming.
+- The performance overlay (`QuickPerformance`) shows resolution, codec,
+  active transport tag (`[NAT-UDP]` / `[WebRTC]`), measured/target Mbps and
+  matching loss metrics (`(FEC)` / `(NACK)`); `Engine::update_net_stats()`
+  feeds it once per second. Native UDP tracks packet loss and Reed-Solomon
+  recovery shards, immediately gating the decoder on IRAP if FEC recovery fails.
 - Streaming resolution is requested in the gateway `x`/`y` parameters and
   `bitrate_max`: 720p = 15 Mbps, 720HQ = 20 Mbps, 1080p = 25 Mbps,
   1080HQ = 30 Mbps; Auto follows dock mode.

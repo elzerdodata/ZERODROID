@@ -109,6 +109,8 @@ struct ServerSettings {
     int codec{0};
     // fps: 0=auto (current default), 1=30, 2=60.
     int fps{0};
+    // transport: 0=auto (Native UDP preferred), 1=Native UDP (proto: 2), 2=WebRTC (proto: 1).
+    int transport{0};
     std::vector<int> favoriteGameIds;
     std::vector<int> recentGameIds;
 };
@@ -137,6 +139,7 @@ ServerSettings load_server_settings() {
         settings.resolution = std::clamp(value.value("resolution", 0), 0, 4);
         settings.codec = std::clamp(value.value("codec", 0), 0, 2);
         settings.fps = std::clamp(value.value("fps", 0), 0, 2);
+        settings.transport = std::clamp(value.value("transport", 0), 0, 2);
         settings.favoriteGameIds = value.value(
             "favoriteGameIds", std::vector<int>{});
         settings.recentGameIds = value.value(
@@ -161,6 +164,7 @@ bool save_server_settings(const ServerSettings& settings) {
         {"resolution", settings.resolution},
         {"codec", settings.codec},
         {"fps", settings.fps},
+        {"transport", settings.transport},
         {"favoriteGameIds", settings.favoriteGameIds},
         {"recentGameIds", settings.recentGameIds},
     }).dump(2);
@@ -286,6 +290,7 @@ enum class SettingsRowId {
     Advanced,
     Codec,
     Fps,
+    Transport,
     Language,
     Logout,
 };
@@ -299,6 +304,7 @@ std::vector<SettingsRowId> settings_rows(bool advancedOpen) {
     if (advancedOpen) {
         rows.push_back(SettingsRowId::Codec);
         rows.push_back(SettingsRowId::Fps);
+        rows.push_back(SettingsRowId::Transport);
     }
     rows.push_back(SettingsRowId::Language);
     rows.push_back(SettingsRowId::Logout);
@@ -483,6 +489,12 @@ int main(int argc, char* argv[]) {
                   ? gnx::stream::CodecPreference::H264
                   : gnx::stream::CodecPreference::Auto);
     stream->set_fps_mode(serverSettings.fps);
+    stream->set_transport_preference(
+        serverSettings.transport == 1
+            ? gnx::stream::TransportPreference::NativeUdp
+            : serverSettings.transport == 2
+                  ? gnx::stream::TransportPreference::WebRtc
+                  : gnx::stream::TransportPreference::Auto);
     ZERODROID::DeviceCodeAuthArtifact authArtifact;
 
     bool hasSession = api.loadSessionFromSD();
@@ -1121,6 +1133,28 @@ int main(int argc, char* argv[]) {
                           ? ui("Limite de FPS: 60.", "FPS limit: 60.")
                           : ui("Limite de FPS: Auto.", "FPS limit: Auto.");
             }
+            if (current == SettingsRowId::Transport && cycle) {
+                const int direction =
+                    (navDown & HidNpadButton_Left) ? -1 : 1;
+                serverSettings.transport =
+                    (serverSettings.transport + direction + 3) % 3;
+                stream->set_transport_preference(
+                    serverSettings.transport == 1
+                        ? gnx::stream::TransportPreference::NativeUdp
+                        : serverSettings.transport == 2
+                              ? gnx::stream::TransportPreference::WebRtc
+                              : gnx::stream::TransportPreference::Auto);
+                save_server_settings(serverSettings);
+                libraryNotice =
+                    serverSettings.transport == 1
+                        ? ui("Protocolo: UDP Nativo (proto: 2, Reed-Solomon FEC).",
+                             "Protocol: Native UDP (proto: 2, Reed-Solomon FEC).")
+                        : serverSettings.transport == 2
+                              ? ui("Protocolo: WebRTC (RTP, NACK y PLI).",
+                                   "Protocol: WebRTC (RTP, NACK and PLI).")
+                              : ui("Protocolo: Auto (UDP Nativo preferido).",
+                                   "Protocol: Auto (Native UDP preferred).");
+            }
             if (current == SettingsRowId::Language && cycle) {
                 serverSettings.language = serverSettings.language == 0 ? 1 : 0;
                 gnx::i18n::set_english(serverSettings.language == 1);
@@ -1217,6 +1251,19 @@ int main(int argc, char* argv[]) {
                     serverSettings.xboxFaceLayout;
                 stream->set_xbox_face_layout(serverSettings.xboxFaceLayout);
                 stream->set_stream_resolution(serverSettings.resolution);
+                stream->set_codec_preference(
+                    serverSettings.codec == 1
+                        ? gnx::stream::CodecPreference::H265
+                        : serverSettings.codec == 2
+                              ? gnx::stream::CodecPreference::H264
+                              : gnx::stream::CodecPreference::Auto);
+                stream->set_fps_mode(serverSettings.fps);
+                stream->set_transport_preference(
+                    serverSettings.transport == 1
+                        ? gnx::stream::TransportPreference::NativeUdp
+                        : serverSettings.transport == 2
+                              ? gnx::stream::TransportPreference::WebRtc
+                              : gnx::stream::TransportPreference::Auto);
                 stream->set_quick_menu_state(quickMenuState);
                 stream->start(game.id);
             }
@@ -1459,6 +1506,27 @@ int main(int argc, char* argv[]) {
                     gfx.text_centered(fpsLabel,
                                       fpsChip.x + fpsChip.w / 2,
                                       fpsChip.y + 18,
+                                      gnx::gfx::FontSize::Small,
+                                      gnx::gfx::kText);
+
+                    SDL_Rect transportRow =
+                        drawCard(rowOf(SettingsRowId::Transport));
+                    gfx.text(ui("Protocolo de red", "Network protocol"),
+                             transportRow.x + 40, transportRow.y + 70,
+                             gnx::gfx::FontSize::Body, gnx::gfx::kText);
+                    SDL_Rect transportChip = {
+                        transportRow.x + transportRow.w - 330,
+                        transportRow.y + 52, 260, 64};
+                    gfx.fill(transportChip, gnx::gfx::kBar);
+                    gfx.frame(transportChip, gnx::gfx::kFocus, 2);
+                    const char* transportLabel = "AUTO (NAT-UDP)";
+                    if (serverSettings.transport == 1)
+                        transportLabel = "NAT-UDP (FEC)";
+                    if (serverSettings.transport == 2)
+                        transportLabel = "WEBRTC";
+                    gfx.text_centered(transportLabel,
+                                      transportChip.x + transportChip.w / 2,
+                                      transportChip.y + 18,
                                       gnx::gfx::FontSize::Small,
                                       gnx::gfx::kText);
                 }
