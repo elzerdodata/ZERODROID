@@ -618,7 +618,10 @@ Engine::SessionResult Engine::run_session() {
             control_.send_ping();
         }
         const int measuredPing = control_.last_ping_ms();
-        if (measuredPing >= 0) pingMs_ = measuredPing;
+        if (measuredPing >= 0) {
+            pingMs_ = measuredPing;
+            jitter_.set_rtt_ms(measuredPing);
+        }
         update_net_stats(controlNow);
         if (controllerId_.load() <= 0 &&
             (!announcedController ||

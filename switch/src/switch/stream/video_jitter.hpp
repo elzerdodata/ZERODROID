@@ -2,6 +2,7 @@
 
 #include <SDL2/SDL.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -43,6 +44,15 @@ public:
     void set_codec(VideoCodec codec) { codec_ = codec; }
     VideoCodec codec() const { return codec_; }
 
+    // Adaptive NACK retention window: update measured RTT (ms) from the ping
+    // monitor. When RTT is low, incomplete frames time out much faster and
+    // recover without the long freeze of a fixed deadline.
+    void set_rtt_ms(int rtt_ms) {
+        rtt_ms_.store(rtt_ms, std::memory_order_relaxed);
+    }
+    int rtt_ms() const { return rtt_ms_.load(std::memory_order_relaxed); }
+    uint64_t hold_ms() const;
+
     void reset();
 
     // Feed one decrypted RTP packet at time now_ms (SDL_GetTicks64).
@@ -78,6 +88,7 @@ private:
     std::deque<Frame> frames_;         // pending frames, ascending timestamp
     std::optional<uint32_t> last_ts_;  // timestamp of the last emitted frame
     VideoCodec codec_ = VideoCodec::H265;
+    std::atomic<int> rtt_ms_{-1};
     bool waiting_keyframe_ = true;
     uint64_t last_keyframe_ms_ = 0;
     uint64_t last_keyframe_request_ms_ = 0;

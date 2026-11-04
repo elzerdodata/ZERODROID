@@ -8,11 +8,14 @@ namespace gnx::stream {
 namespace {
 
 constexpr size_t kMaxAccessUnitBytes = 2 * 1024 * 1024;
-// Allow enough time for a NACK round trip on a distant xCloud route. At 90 ms,
-// a single video packet arriving just after the deadline discarded the whole
-// predictive chain and froze output until a new IDR. The added delay applies
-// only while a frame is already incomplete; healthy frames still emit at once.
-constexpr uint64_t kHoldMs = 200;
+// Adaptive NACK hold window:
+// When RTT is unknown, default to 150 ms. When RTT is measured, scale to
+// 1.5x RTT + 15 ms margin (to cover server processing and packet scheduling),
+// clamped between 40 ms (enough time for retransmission even on low ping)
+// and 200 ms (upper bound to keep latency bounded and avoid buffer bloat).
+constexpr uint64_t kDefaultHoldMs = 150;
+constexpr uint64_t kMinHoldMs = 40;
+constexpr uint64_t kMaxHoldMs = 200;
 constexpr uint64_t kKeyframeIntervalMs = 4000;
 constexpr uint64_t kKeyframeRequestCooldownMs = 1000;
 constexpr size_t kMaxFrames = 32;  // safety cap on buffered frames
@@ -158,6 +161,7 @@ bool has_keyframe(const std::vector<uint8_t>& au, VideoCodec codec) {
 void VideoJitterBuffer::reset() {
     frames_.clear();
     last_ts_.reset();
+    rtt_ms_.store(-1, std::memory_order_relaxed);
     waiting_keyframe_ = true;
     last_keyframe_ms_ = 0;
     last_keyframe_request_ms_ = 0;
@@ -165,6 +169,14 @@ void VideoJitterBuffer::reset() {
     have_seq_ = false;
     max_seq_ = 0;
     cycles_ = base_seq_ = received_ = received_prior_ = expected_prior_ = 0;
+}
+
+uint64_t VideoJitterBuffer::hold_ms() const {
+    const int rtt = rtt_ms_.load(std::memory_order_relaxed);
+    if (rtt <= 0) return kDefaultHoldMs;
+    const uint64_t dynamic =
+        static_cast<uint64_t>(static_cast<float>(rtt) * 1.5f + 15.0f);
+    return std::clamp<uint64_t>(dynamic, kMinHoldMs, kMaxHoldMs);
 }
 
 bool VideoJitterBuffer::report_stats(uint8_t* fraction_lost,
@@ -320,7 +332,7 @@ void VideoJitterBuffer::receive(const uint8_t* rtp, size_t len, uint64_t now_ms,
         // Not assemblable yet. If it has waited long enough, give up on it (a
         // packet was lost and no retransmit came) and resync from the next
         // clean keyframe -- never feed the decoder a broken reference frame.
-        if (now_ms - front.first_seen_ms > kHoldMs) {
+        if (now_ms - front.first_seen_ms > hold_ms()) {
             last_ts_ = front.timestamp;
             frames_.pop_front();
             waiting_keyframe_ = true;

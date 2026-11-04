@@ -21,6 +21,8 @@ controller input.
   session once with H.264 if no frame arrives.
 - The in-game performance overlay now shows the negotiated codec and the
   measured/target bitrate.
+- Adaptive NACK retention window in the jitter buffer (scales with measured
+  RTT instead of a fixed 200 ms timeout), speeding up packet-loss recovery.
 
 ## Included from v0.8.8
 

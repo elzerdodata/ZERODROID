@@ -12,6 +12,9 @@
   with H.264 when no frame arrives; Auto FPS keeps the previous 60 fps default.
 - The in-stream performance overlay now shows the negotiated codec and the
   measured/target bitrate.
+- Adaptive NACK retention window in the jitter buffer: scales with measured RTT
+  (1.5x RTT + 15 ms, clamped to 40-200 ms) instead of a fixed 200 ms timeout,
+  accelerating packet-loss recovery on low-latency connections.
 
 ## v0.8.8 - Quality modes and session reuse
 
