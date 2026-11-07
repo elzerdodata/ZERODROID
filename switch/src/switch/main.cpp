@@ -115,6 +115,9 @@ struct ServerSettings {
     int transport{0};
     // upscaler: 0=off, 1=FSR 1 (EASU upscale + RCAS sharpening).
     int upscaler{1};
+    // In-stream touchpad drives the virtual mouse. Off means touching the
+    // screen outside the quick menu does nothing.
+    bool mouse{true};
     std::vector<int> favoriteGameIds;
     std::vector<int> recentGameIds;
 };
@@ -145,6 +148,7 @@ ServerSettings load_server_settings() {
         settings.fps = std::clamp(value.value("fps", 0), 0, 2);
         settings.transport = std::clamp(value.value("transport", 0), 0, 2);
         settings.upscaler = std::clamp(value.value("upscaler", 1), 0, 1);
+        settings.mouse = value.value("mouse", true);
         settings.favoriteGameIds = value.value(
             "favoriteGameIds", std::vector<int>{});
         settings.recentGameIds = value.value(
@@ -171,6 +175,7 @@ bool save_server_settings(const ServerSettings& settings) {
         {"fps", settings.fps},
         {"transport", settings.transport},
         {"upscaler", settings.upscaler},
+        {"mouse", settings.mouse},
         {"favoriteGameIds", settings.favoriteGameIds},
         {"recentGameIds", settings.recentGameIds},
     }).dump(2);
@@ -324,8 +329,9 @@ std::vector<SettingsRowId> settings_rows(bool advancedOpen) {
 // belongs to the panel; a tap outside closes it.
 bool handle_stream_settings_touch(gnx::stream::QuickMenuState& state,
                                   int x, int y, bool& layoutChanged,
-                                  bool& leaveRequested) {
+                                  bool& mouseChanged, bool& leaveRequested) {
     layoutChanged = false;
+    mouseChanged = false;
     leaveRequested = false;
     if (point_in_rect(x, y, gnx::stream::kQuickToggleRect)) {
         state.open = !state.open;
@@ -353,6 +359,12 @@ bool handle_stream_settings_touch(gnx::stream::QuickMenuState& state,
                              gnx::stream::QuickController))) {
         state.xboxFaceLayout = !state.xboxFaceLayout;
         layoutChanged = true;
+        changed = true;
+    } else if (point_in_rect(
+                   x, y,
+                   gnx::stream::quick_row_rect(gnx::stream::QuickMouse))) {
+        state.mouse = !state.mouse;
+        mouseChanged = true;
         changed = true;
     } else if (point_in_rect(x, y, gnx::stream::kQuickResetRect)) {
         state.brightness = 0;
@@ -486,6 +498,7 @@ int main(int argc, char* argv[]) {
     };
     gnx::stream::QuickMenuState quickMenuState;
     quickMenuState.xboxFaceLayout = serverSettings.xboxFaceLayout;
+    quickMenuState.mouse = serverSettings.mouse;
     auto stream = std::make_unique<gnx::stream::Engine>(api, gfx.renderer());
     stream->set_xbox_face_layout(serverSettings.xboxFaceLayout);
     stream->set_quick_menu_state(quickMenuState);
@@ -724,14 +737,15 @@ int main(int argc, char* argv[]) {
                     touchOnUi =
                         quickMenuState.open ||
                         point_in_rect(x, y, gnx::stream::kQuickToggleRect);
-                    if (!touchOnUi) {
+                    if (!touchOnUi && quickMenuState.mouse) {
                         // First touchpad contact: show the cursor at centre.
                         stream->virtual_mouse_move(0.0f, 0.0f);
                     }
                 } else {
                     const int moveX = x - touchLastX;
                     const int moveY = y - touchLastY;
-                    if (!touchOnUi && (moveX != 0 || moveY != 0)) {
+                    if (!touchOnUi && quickMenuState.mouse &&
+                        (moveX != 0 || moveY != 0)) {
                         if (std::abs(x - touchDownX) >
                                 kVirtualMouseMoveThreshold ||
                             std::abs(y - touchDownY) >
@@ -753,10 +767,11 @@ int main(int argc, char* argv[]) {
                     if (dx < 100 && dy < 100) {
                         const bool wasOpen = quickMenuState.open;
                         bool layoutChanged = false;
+                        bool mouseChanged = false;
                         const bool quickTouch =
                             handle_stream_settings_touch(
                                 quickMenuState, touchLastX, touchLastY,
-                                layoutChanged, leaveFromMenu);
+                                layoutChanged, mouseChanged, leaveFromMenu);
                         if (quickTouch || wasOpen != quickMenuState.open) {
                             stream->set_quick_menu_state(quickMenuState);
                         }
@@ -767,8 +782,17 @@ int main(int argc, char* argv[]) {
                                 serverSettings.xboxFaceLayout);
                             save_server_settings(serverSettings);
                         }
+                        if (mouseChanged) {
+                            serverSettings.mouse = quickMenuState.mouse;
+                            save_server_settings(serverSettings);
+                            if (!quickMenuState.mouse) {
+                                // Drop a cursor that may already be on screen.
+                                stream->virtual_mouse_hide();
+                            }
+                        }
                     }
-                } else if (!touchMoved && dx < kVirtualMouseMoveThreshold &&
+                } else if (quickMenuState.mouse && !touchMoved &&
+                           dx < kVirtualMouseMoveThreshold &&
                            dy < kVirtualMouseMoveThreshold) {
                     const uint64_t heldMs =
                         SDL_GetTicks64() - touchDownAt;
@@ -777,7 +801,8 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            if (SDL_GetTicks64() - lastTouchAt >= kVirtualMouseHideMs) {
+            if (quickMenuState.mouse &&
+                SDL_GetTicks64() - lastTouchAt >= kVirtualMouseHideMs) {
                 stream->virtual_mouse_hide();
             }
 
@@ -1288,6 +1313,7 @@ int main(int argc, char* argv[]) {
                 quickMenuState.ping = false;  // every new session starts hidden
                 quickMenuState.xboxFaceLayout =
                     serverSettings.xboxFaceLayout;
+                quickMenuState.mouse = serverSettings.mouse;
                 stream->set_xbox_face_layout(serverSettings.xboxFaceLayout);
                 stream->set_stream_resolution(serverSettings.resolution);
                 stream->set_codec_preference(

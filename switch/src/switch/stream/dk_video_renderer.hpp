@@ -263,7 +263,7 @@ private:
     // One transparent RGBA texture covers both shapes and costs one overlay
     // draw call regardless of whether the panel is open.
     static constexpr uint32_t kQuickTexW = 672;
-    static constexpr uint32_t kQuickTexH = 812;
+    static constexpr uint32_t kQuickTexH = 870;
     dk::UniqueMemBlock quick_memblock_;
     dk::Image quick_image_;
     dk::ImageDescriptor quick_desc_;

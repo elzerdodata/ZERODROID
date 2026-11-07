@@ -94,6 +94,13 @@ script with `--container`, which builds in-place without nested Docker.
   the upscale stays inside FSR's 4x area limit. With FSR 1 enabled every
   ceiling is trimmed by 10% (`stream_bitrate`), trading a little detail for
   more WiFi headroom; it is applied in the `getstatus` reply and in the HUD cap.
+- The in-stream touch panel (two-dot handle) is rasterized on the CPU into a
+  672x870 RGBA texture at the geometry in `quick_menu.hpp`; keep
+  `kQuickTextureRect`, `kQuickPanelRect`, `kQuickTexH` and the `kQuickQuad`
+  clip-space corners in sync when adding rows. Its `Mouse` row gates the
+  virtual mouse: `main.cpp` only calls `virtual_mouse_move/click` while
+  `quickMenuState.mouse` is set, and the flag persists as `mouse` in
+  `settings.json`.
 - The performance overlay (`QuickPerformance`) shows resolution, codec,
   active transport tag (`[NAT-UDP]` / `[WebRTC]`), measured/target Mbps and
   matching loss metrics (`(FEC)` / `(NACK)`); `Engine::update_net_stats()`

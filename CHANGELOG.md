@@ -16,6 +16,9 @@
   - Performance HUD tags the active path (`[FSR]` / `[FSR-S]`).
   - With FSR 1 enabled, the encoder ceiling requested from the gateway (and
     shown in the HUD) is 10% lower, leaving more headroom for the WiFi.
+- In-stream menu: new Mouse row (ON/OFF, persisted as `mouse`). When OFF the
+  touchpad is ignored outside the menu, so accidental touches never move or
+  click the virtual mouse. The panel grew to fit the extra row.
 
 ## v0.9.0 - WebRTC vs Native UDP and adaptive jitter recovery
 

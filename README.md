@@ -135,11 +135,14 @@ not include or install custom firmware.
 - **Y in the library:** search using the system keyboard.
 - **X in the library:** add or remove the selected game from Favorites.
 - **R3 in the library:** refresh the Boosteroid library.
-- **Two dots during streaming:** open the touch settings panel.
+- **Two dots during streaming:** open the touch settings panel, which also has
+  the Mouse switch for the virtual touchpad cursor.
 - **Leave Session in the stream panel:** stop streaming and return to the
   library.
 - **Touchpad during streaming:** move the purple virtual mouse. A quick tap
-  sends a left click and a long press sends a right click.
+  sends a left click and a long press sends a right click. The in-stream panel
+  has a **Mouse** row: when it is OFF, touching the screen outside the panel
+  does nothing.
 - **Ping in the stream panel:** show or hide the latency badge; it starts off
   in every new session.
 - **L + R + Minus:** stop streaming and return to the library.

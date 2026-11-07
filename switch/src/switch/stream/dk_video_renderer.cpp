@@ -77,12 +77,12 @@ constexpr Vertex kHudQuad[] = {
     {{-0.40f, +0.98f, 0.0f}, {1.0f, 0.0f}},
 };
 
-// Transparent 672x812 quick-menu texture in shared 1920x1080 design space.
+// Transparent 672x870 quick-menu texture in shared 1920x1080 design space.
 // It spans from the panel to the relocated two-dot handle.
 constexpr Vertex kQuickQuad[] = {
     {{+0.2083f, +0.9852f, 0.0f}, {0.0f, 0.0f}},
-    {{+0.2083f, -0.5185f, 0.0f}, {0.0f, 1.0f}},
-    {{+0.9083f, -0.5185f, 0.0f}, {1.0f, 1.0f}},
+    {{+0.2083f, -0.6259f, 0.0f}, {0.0f, 1.0f}},
+    {{+0.9083f, -0.6259f, 0.0f}, {1.0f, 1.0f}},
     {{+0.9083f, +0.9852f, 0.0f}, {1.0f, 0.0f}},
 };
 
@@ -156,6 +156,7 @@ void DkVideoRenderer::set_quick_menu_state(const QuickMenuState& state) {
         next.open != quick_state_.open ||
         next.performance != quick_state_.performance ||
         next.ping != quick_state_.ping ||
+        next.mouse != quick_state_.mouse ||
         next.xboxFaceLayout != quick_state_.xboxFaceLayout || picture_changed;
     quick_state_ = next;
     hud_enabled_ = next.performance;
@@ -959,8 +960,8 @@ void DkVideoRenderer::rasterize_quick_menu() {
         blit_quick_text("ZERODROID SETTINGS", menu.x + 20, menu.y + 16);
 
         const char* labels[kQuickRowCount] = {
-            "Performance", "Ping", "Button layout", "Brightness", "Contrast",
-            "Saturation", "Gamma", "Sharpness"};
+            "Performance", "Ping", "Button layout", "Mouse", "Brightness",
+            "Contrast", "Saturation", "Gamma", "Sharpness"};
         const char* sharp_labels[4] = {"Off", "Low", "Medium", "High"};
 
         for (int row = 0; row < kQuickRowCount; ++row) {
@@ -998,6 +999,16 @@ void DkVideoRenderer::rasterize_quick_menu() {
                 blit_quick_text(quick_state_.xboxFaceLayout ? "XBOX"
                                                              : "NINTENDO",
                                 rr.x + 314, rr.y + 12);
+                continue;
+            }
+
+            if (row == QuickMouse) {
+                fill(rr.x + 350, rr.y + 6, 104, rr.h - 12,
+                     quick_state_.mouse ? active : rgba(42, 49, 60, 240));
+                frame(rr.x + 350, rr.y + 6, 104, rr.h - 12, 2,
+                      quick_state_.mouse ? accent : edge);
+                blit_quick_text(quick_state_.mouse ? "ON" : "OFF",
+                                rr.x + 378, rr.y + 12);
                 continue;
             }
 
