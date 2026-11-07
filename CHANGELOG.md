@@ -1,5 +1,22 @@
 # ZERODROID changelog
 
+## v0.9.1 - FSR 1 upscaler for low-bandwidth streaming
+
+- AMD FidelityFX Super Resolution 1 (FSR 1) video upscaler:
+  - EASU edge-adaptive upscaling (luma plane, 12 taps clamped to the visible
+    NVDEC area) plus the RCAS sharpening pass, running entirely on the GPU with
+    zero-copy NVDEC input.
+  - Settings -> Advanced -> Upscaler (FSR 1 / OFF, persisted as `upscaler`).
+    FSR also runs at 1:1 in handheld mode, where RCAS is what keeps a soft
+    low-bitrate stream readable.
+  - New FSR source resolutions: 540p (10 Mbps) and 480p (7 Mbps, handheld).
+    They request fewer pixels at a much lower bitrate over the Switch's WiFi and
+    let FSR rebuild the panel resolution. Docked, 480p promotes to 540p so the
+    upscale stays inside FSR's 4x area limit.
+  - Performance HUD tags the active path (`[FSR]` / `[FSR-S]`).
+  - With FSR 1 enabled, the encoder ceiling requested from the gateway (and
+    shown in the HUD) is 10% lower, leaving more headroom for the WiFi.
+
 ## v0.9.0 - WebRTC vs Native UDP and adaptive jitter recovery
 
 - Adaptive NACK retention window in the jitter buffer: scales with measured RTT

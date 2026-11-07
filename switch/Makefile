@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 APP_TITLE   := ZERODROID
 APP_AUTHOR  := Zero Data
-APP_VERSION := 0.9.0
+APP_VERSION := 0.9.1
 APP_ICON    := icon.jpg
 
 TARGET   := ZERODROID
@@ -76,7 +76,9 @@ export NROFLAGS += --icon=$(CURDIR)/$(APP_ICON) --nacp=$(CURDIR)/$(TARGET).nacp
 UAM        := $(DEVKITPRO)/tools/bin/uam
 SHADER_OUT := $(CURDIR)/romfs/shaders/video_vsh.dksh \
               $(CURDIR)/romfs/shaders/video_fsh.dksh \
-              $(CURDIR)/romfs/shaders/hud_fsh.dksh
+              $(CURDIR)/romfs/shaders/hud_fsh.dksh \
+              $(CURDIR)/romfs/shaders/video_fsr_fsh.dksh \
+              $(CURDIR)/romfs/shaders/fsr_rcas_fsh.dksh
 
 .PHONY: all clean shaders
 

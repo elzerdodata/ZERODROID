@@ -98,6 +98,11 @@ public:
     bool init();
     void shutdown();
 
+    // FSR 1 upscaler: 0 = off (plain bilinear sampling), 1 = AMD FidelityFX
+    // Super Resolution 1 (EASU luma upscale + RCAS sharpen).
+    void set_upscaler(int mode);
+    int upscaler() const { return upscaler_; }
+
     // Present one decoded frame. frame must be AV_PIX_FMT_NVTEGRA. When
     // motion_frame is compatible and motion_blend is between 0 and 1, the
     // shader generates a cross-frame midpoint for Motion pacing.
@@ -139,6 +144,10 @@ private:
     bool create_swapchain();          // (re)build framebuffers + swapchain
     void destroy_swapchain();         // waitIdle + release them
     void maybe_rebuild_swapchain();   // rebuild if the dock mode changed
+    // Intermediate RGBA8 target for the two-pass FSR pipeline. Rebuilt when the
+    // framebuffer size changes (dock/undock).
+    bool ensure_fsr_target();
+    void destroy_fsr_target();
     // (Re)build the R8/RG8 layouts on the surface's REAL allocated geometry
     // (aligned dims, pitch vs block linear); crop to the visible area in the
     // shader via the transform.
@@ -179,6 +188,8 @@ private:
     dk::Shader vertex_shader_;
     dk::Shader fragment_shader_;
     dk::Shader hud_fsh_;  // HUD overlay (stage 0: flat panel; stage 1: text)
+    dk::Shader fsr_fsh_;  // FSR 1 EASU luma upscale + NV12 -> RGB
+    dk::Shader rcas_fsh_; // FSR 1 RCAS sharpen over the intermediate target
 
     // data_memblock_ sub-allocations (offsets):
     uint32_t vtx_offset_ = 0;        // quad vertex buffer
@@ -203,6 +214,16 @@ private:
     uint32_t chroma_w_ = 0, chroma_h_ = 0;
     bool linear_ = false;                // pitch-linear surface?
     bool transform_dirty_ = true;
+    // 0 = off, 1 = FSR 1. The intermediate target is only allocated while the
+    // upscaler is enabled.
+    int upscaler_ = 0;
+    bool fsr_upscale_logged_ = false;
+    dk::UniqueMemBlock fsr_memblock_;
+    dk::ImageLayout fsr_layout_;
+    dk::Image fsr_image_;
+    dk::ImageDescriptor fsr_desc_{};
+    uint32_t fsr_width_ = 0;
+    uint32_t fsr_height_ = 0;
     QuickMenuState quick_state_;
     int ping_ms_ = -1;
     int color_space_ = -1;

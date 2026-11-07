@@ -33,29 +33,53 @@ gnx::stream::Engine* g_active_engine = nullptr;
 bool g_peer_initialized = false;
 
 void stream_dimensions(int mode, int& width, int& height) {
-    if (mode == 1 || mode == 2) {
-        width = 1280;
-        height = 720;
-    } else if (mode == 3 || mode == 4) {
-        width = 1920;
-        height = 1080;
-    } else {
-        const bool docked =
-            appletGetOperationMode() == AppletOperationMode_Console;
-        width = docked ? 1920 : 1280;
-        height = docked ? 1080 : 720;
+    const bool docked =
+        appletGetOperationMode() == AppletOperationMode_Console;
+    switch (mode) {
+        case 1:
+        case 2:
+            width = 1280;
+            height = 720;
+            break;
+        case 3:
+        case 4:
+            width = 1920;
+            height = 1080;
+            break;
+        case 5:
+            // FSR source resolution: fewer pixels at the same bitrate means a
+            // much better picture per pixel; EASU brings it back to the panel.
+            width = 960;
+            height = 540;
+            break;
+        case 6:
+            // 480p is handheld-only. Docked it would need a 5x area upscale,
+            // beyond FSR 1's 1x..4x range, so it promotes to 540p.
+            width = docked ? 960 : 854;
+            height = docked ? 540 : 480;
+            break;
+        default:
+            width = docked ? 1920 : 1280;
+            height = docked ? 1080 : 720;
+            break;
     }
 }
 
-int stream_bitrate(int mode, int width) {
+int stream_bitrate(int mode, int width, bool fsr) {
     // HQ modes request the same resolution with a higher encoder ceiling.
+    int ceiling = 15000000;
     switch (mode) {
-        case 1: return 15000000;   // 720p
-        case 2: return 20000000;   // 720HQ
-        case 3: return 25000000;   // 1080p
-        case 4: return 30000000;   // 1080HQ
-        default: return width >= 1920 ? 25000000 : 15000000;
+        case 1: ceiling = 15000000; break;  // 720p
+        case 2: ceiling = 20000000; break;  // 720HQ
+        case 3: ceiling = 25000000; break;  // 1080p
+        case 4: ceiling = 30000000; break;  // 1080HQ
+        case 5: ceiling = 10000000; break;  // 540p (FSR source)
+        case 6: ceiling = 7000000; break;   // 480p (FSR source)
+        default: ceiling = width >= 1920 ? 25000000 : 15000000; break;
     }
+    // FSR 1 keeps the picture usable at a lower bitrate, so while it is active
+    // the ceiling is trimmed by 10% to leave headroom on the Switch's WiFi.
+    return fsr ? ceiling * 9 / 10 : ceiling;
 }
 
 void av_log_capture(void*, int level, const char* format, va_list args) {
@@ -375,7 +399,7 @@ void Engine::global_shutdown() {
 }
 
 void Engine::set_stream_resolution(int mode) {
-    streamResolution_ = std::clamp(mode, 0, 4);
+    streamResolution_ = std::clamp(mode, 0, 6);
 }
 
 void Engine::set_codec_preference(CodecPreference preference) {
@@ -388,6 +412,11 @@ void Engine::set_fps_mode(int mode) {
 
 void Engine::set_transport_preference(TransportPreference preference) {
     transportPreference_ = preference;
+}
+
+void Engine::set_upscaler_preference(UpscalerPreference preference) {
+    upscalerPreference_ = preference;
+    dkVideo_.set_upscaler(static_cast<int>(preference));
 }
 
 void Engine::start(int appId, const std::string& preferredGateway) {
@@ -470,7 +499,10 @@ void Engine::start(int appId, const std::string& preferredGateway) {
         int streamHeight = 720;
         stream_dimensions(streamResolution_, streamWidth, streamHeight);
         dkVideo_.set_bitrate_cap_mbps(
-            static_cast<int>(stream_bitrate(streamResolution_, streamWidth) /
+            static_cast<int>(stream_bitrate(
+                                 streamResolution_, streamWidth,
+                                 upscalerPreference_ ==
+                                     UpscalerPreference::Fsr1) /
                              1000000));
     }
     nextPresentCounter_ = 0;
@@ -1469,6 +1501,9 @@ void Engine::handle_control_message(const std::string& raw) {
         stream_dimensions(streamResolution_, streamWidth, streamHeight);
         const int proto =
             transportPreference_ == TransportPreference::WebRtc ? 1 : 2;
+        const bool fsr = upscalerPreference_ == UpscalerPreference::Fsr1;
+        const int bitrateMax = stream_bitrate(streamResolution_, streamWidth,
+                                              fsr);
         send_control_json(nlohmann::json({
             {"type", "stream"}, {"action", "status"}, {"value", "ok"},
             {"params", {
@@ -1477,11 +1512,13 @@ void Engine::handle_control_message(const std::string& raw) {
                 {"codec", activeCodec_.load() == VideoCodec::H265 ? "h265"
                                                                   : "h264"},
                 {"framerate_max", stream_fps()},
-                {"bitrate_max", stream_bitrate(streamResolution_, streamWidth)},
+                {"bitrate_max", bitrateMax},
                 {"hdr", false}}}}).dump());
         log("getstatus reply proto=" + std::to_string(proto) +
             " codec=" + (activeCodec_.load() == VideoCodec::H265 ? "h265" : "h264") +
-            " fps=" + std::to_string(stream_fps()));
+            " fps=" + std::to_string(stream_fps()) +
+            " bitrate_max=" + std::to_string(bitrateMax) +
+            " fsr=" + (fsr ? "1" : "0"));
         return;
     }
     if (type == "controller" && action == "connected") {

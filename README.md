@@ -3,16 +3,31 @@
 **Zero Data · Nintendo Switch cloud gaming client**
 
 ZERODROID is an open-source, unofficial Boosteroid client for Nintendo Switch
-homebrew. Version 0.9.0 provides QR login, a controller-first game library,
-native H.265/HEVC video with automatic H.264 fallback, Opus audio and complete
-controller input.
+homebrew. Version 0.9.1 provides QR login, a controller-first game library,
+native H.265/HEVC video with automatic H.264 fallback, FSR 1 upscaling, Opus
+audio and complete controller input.
 
 > [!IMPORTANT]
 > ZERODROID is a beta and is not affiliated with or endorsed by Boosteroid or
 > Nintendo. It requires a legitimate Boosteroid account and does not provide,
 > download or bypass access to games, subscriptions, DRM or Nintendo software.
 
-## New in v0.9.0
+## New in v0.9.1
+
+- AMD FidelityFX Super Resolution 1 (FSR 1) as the video upscaler: EASU edge
+  adaptive upscaling when the stream is below the display resolution and the
+  RCAS sharpening pass in every case, so low-bitrate sessions stay sharp and
+  readable. It also runs at 1:1 in handheld mode.
+- Settings -> Advanced -> Upscaler (FSR 1 / OFF).
+- New FSR source resolutions: 540p (10 Mbps) and 480p (7 Mbps, handheld). Fewer
+  pixels at a much lower bitrate over the Switch's WiFi, with FSR rebuilding the
+  panel resolution. Docked, 480p promotes to 540p to stay inside FSR's 4x area
+  limit.
+- With FSR 1 enabled the encoder ceiling is 10% lower, giving the WiFi extra
+  headroom; the HUD shows the negotiated cap.
+- The performance overlay tags the active path (`[FSR]` / `[FSR-S]`).
+
+## Included from v0.9.0
 
 - Differentiation between WebRTC and Native UDP (proto: 2): custom Reed-Solomon
   FEC loss tracking, prompt keyframe gating on packet recovery failure, and
@@ -106,8 +121,15 @@ not include or install custom firmware.
 ## Controls
 
 - **Minus in the library:** ZERODROID Settings.
-- **Streaming resolution in Settings:** Automatic, 720p, 720HQ, 1080p or
-  1080HQ; applies on the next game launch.
+- **Streaming resolution in Settings:** Automatic, 720p, 720HQ, 1080p, 1080HQ,
+  540p or 480p. The two low modes are FSR sources: they ask the server for
+  fewer pixels at a much lower bitrate (10 Mbps / 7 Mbps) and FSR 1 upscales
+  them back to the panel. Applies on the next game launch.
+- **Upscaler in Settings -> Advanced:** FSR 1 or OFF. FSR upscales 720p/540p/
+  480p sources to the display and always applies its RCAS sharpening pass, also
+  at 1:1 in handheld mode (HUD shows `[FSR]` or `[FSR-S]`). While FSR is on, the
+  encoder ceiling requested from the server is 10% lower to give the WiFi
+  headroom.
 - **Left stick or D-pad:** navigate the library and Settings menus.
 - **ZL / ZR:** switch between All, Favorites and Recent.
 - **Y in the library:** search using the system keyboard.

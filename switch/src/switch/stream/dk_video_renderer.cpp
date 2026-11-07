@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -24,7 +25,12 @@ namespace gnx::stream {
 
 namespace {
 
-constexpr uint32_t kCodeSize = 96 * 1024;  // video vsh + video fsh + hud fsh
+constexpr uint32_t kCodeSize = 192 * 1024;  // 5 shaders, 32 KiB slot each
+constexpr uint32_t kShaderVideoVsh = 0x00000;
+constexpr uint32_t kShaderVideoFsh = 0x08000;
+constexpr uint32_t kShaderHudFsh = 0x10000;
+constexpr uint32_t kShaderFsrFsh = 0x18000;
+constexpr uint32_t kShaderRcasFsh = 0x20000;
 constexpr uint32_t kCmdPerFrameSize = 64 * 1024;
 constexpr uint32_t kFrameSlots = 3;
 constexpr uint32_t kCmdSize = kFrameSlots * kCmdPerFrameSize;
@@ -38,7 +44,7 @@ constexpr uint32_t kUniformSlotOff = 0x100;
 constexpr uint32_t kUniformSlotStride = 0x100;
 constexpr uint32_t kSamplerOff = 0x400;       // sampler descriptor set
 constexpr uint32_t kImageSlotOff = 0x500;     // per-slot image descriptor set
-constexpr uint32_t kImageSlotStride = 0x100;  // 256 bytes stride per slot (7 * 32 = 224 bytes)
+constexpr uint32_t kImageSlotStride = 0x100;  // 256 bytes stride per slot (8 * 32 = 256 bytes)
 constexpr uint32_t kVtxOff = 0x800;           // quad vertex buffer
 constexpr uint32_t kHudVtxOff = 0x880;        // HUD overlay corner quad
 constexpr uint32_t kQuickVtxOff = 0x980;      // two-dot handle + quick panel
@@ -94,11 +100,15 @@ struct Transformation {
     alignas(16) float sharp_data[4];  // x=strength, y=overshoot allowance
     alignas(16) float picture_data[4];  // brightness, contrast, saturation, gamma
     alignas(16) float motion_data[4];  // x=blend factor, y=enabled
+    // FSR 1: x/y = visible input size, z/w = framebuffer size; .w of
+    // fsr_sharp holds the RCAS sharpness already converted from stops.
+    alignas(16) float fsr_data[4];
+    alignas(16) float fsr_sharp[4];
 };
 
-static_assert(7 * sizeof(DkImageDescriptor) <= kImageSlotStride,
+static_assert(8 * sizeof(DkImageDescriptor) <= kImageSlotStride,
               "image descriptors overlap image slot stride");
-static_assert(sizeof(Transformation) == 144, "std140 Transformation");
+static_assert(sizeof(Transformation) == 176, "std140 Transformation");
 static_assert(kFrameSlots == 3, "renderer slot count must match kFbNum");
 
 // Column-major YUV->RGB matrices (matching Moonlight-Switch / BT.xxx).
@@ -166,6 +176,15 @@ void DkVideoRenderer::set_virtual_mouse_cursor(float x, float y, bool visible) {
     cursor_visible_ = visible;
 }
 
+void DkVideoRenderer::set_upscaler(int mode) {
+    const int next = std::clamp(mode, 0, 1);
+    if (next == upscaler_) return;
+    upscaler_ = next;
+    // The unsharp mask and the FSR constants are baked into the transform.
+    transform_dirty_ = true;
+    logf("deko3d: FSR1 %s", upscaler_ ? "enabled" : "disabled");
+}
+
 void DkVideoRenderer::logf(const char* fmt, ...) {
     if (!log_) return;
     char buf[256];
@@ -214,6 +233,54 @@ void DkVideoRenderer::destroy_swapchain() {
     }
     swapchain_ = nullptr;
     fb_memblock_ = nullptr;
+    // The FSR pipeline is sized from the framebuffer, so it dies with it.
+    destroy_fsr_target();
+}
+
+void DkVideoRenderer::destroy_fsr_target() {
+    fsr_memblock_ = nullptr;
+    fsr_width_ = 0;
+    fsr_height_ = 0;
+}
+
+bool DkVideoRenderer::ensure_fsr_target() {
+    if (!dev_ || fb_width_ == 0 || fb_height_ == 0) return false;
+    if (fsr_memblock_ && fsr_width_ == fb_width_ && fsr_height_ == fb_height_)
+        return true;
+
+    // Only called from render() when the size changed (dock/undock) or on the
+    // first FSR frame. waitIdle keeps a queued frame from sampling the old
+    // target while it is released; it happens once per resolution change.
+    if (queue_) queue_.waitIdle();
+    destroy_fsr_target();
+
+    dk::ImageLayoutMaker{dev_}
+        .setFlags(DkImageFlags_UsageRender | DkImageFlags_UsageLoadStore |
+                  DkImageFlags_PitchLinear)
+        .setFormat(DkImageFormat_RGBA8_Unorm)
+        .setDimensions(fb_width_, fb_height_)
+        .setPitchStride(fb_width_ * 4)
+        .initialize(fsr_layout_);
+    uint32_t size = static_cast<uint32_t>(fsr_layout_.getSize());
+    const uint32_t align = fsr_layout_.getAlignment();
+    size = (size + align - 1) & ~(align - 1);
+
+    fsr_memblock_ = dk::MemBlockMaker{dev_, size}
+                        .setFlags(DkMemBlockFlags_GpuCached |
+                                  DkMemBlockFlags_Image)
+                        .create();
+    if (!fsr_memblock_) {
+        logf("deko3d: FSR target allocation failed (%u bytes)", size);
+        return false;
+    }
+    fsr_image_.initialize(fsr_layout_, fsr_memblock_, 0);
+    dk::ImageView view{fsr_image_};
+    fsr_desc_.initialize(view, false, false);
+    fsr_width_ = fb_width_;
+    fsr_height_ = fb_height_;
+    logf("deko3d: FSR target %ux%u RGBA8 (%u KiB)", fsr_width_, fsr_height_,
+         size / 1024);
+    return true;
 }
 
 void DkVideoRenderer::release_in_flight_frames() {
@@ -235,6 +302,7 @@ void DkVideoRenderer::maybe_rebuild_swapchain() {
     destroy_swapchain();
     fb_width_ = w;
     fb_height_ = h;
+    transform_dirty_ = true;  // the FSR/RCAS constants embed the output size
     create_swapchain();
 }
 
@@ -299,6 +367,11 @@ bool DkVideoRenderer::init() {
         std::fseek(f, 0, SEEK_END);
         long size = std::ftell(f);
         std::rewind(f);
+        if (size <= 0 || size > 0x8000) {  // each shader owns a 32 KiB slot
+            logf("deko3d: %s has unexpected size %ld", path, size);
+            std::fclose(f);
+            return false;
+        }
         void* dst = static_cast<uint8_t*>(code_memblock_.getCpuAddr()) + code_off;
         size_t rd = std::fread(dst, 1, size, f);
         std::fclose(f);
@@ -309,10 +382,16 @@ bool DkVideoRenderer::init() {
         dk::ShaderMaker{code_memblock_, code_off}.initialize(shader);
         return true;
     };
-    if (!load_shader(vertex_shader_, "romfs:/shaders/video_vsh.dksh", 0) ||
+    if (!load_shader(vertex_shader_, "romfs:/shaders/video_vsh.dksh",
+                     kShaderVideoVsh) ||
         !load_shader(fragment_shader_, "romfs:/shaders/video_fsh.dksh",
-                     0x8000) ||
-        !load_shader(hud_fsh_, "romfs:/shaders/hud_fsh.dksh", 0x10000)) {
+                     kShaderVideoFsh) ||
+        !load_shader(hud_fsh_, "romfs:/shaders/hud_fsh.dksh",
+                     kShaderHudFsh) ||
+        !load_shader(fsr_fsh_, "romfs:/shaders/video_fsr_fsh.dksh",
+                     kShaderFsrFsh) ||
+        !load_shader(rcas_fsh_, "romfs:/shaders/fsr_rcas_fsh.dksh",
+                     kShaderRcasFsh)) {
         return false;
     }
 
@@ -457,6 +536,7 @@ void DkVideoRenderer::shutdown() {
     cmd_memblock_ = nullptr;
     data_memblock_ = nullptr;
     fb_memblock_ = nullptr;
+    destroy_fsr_target();
     hud_memblock_ = nullptr;
     hud_cpu_ = nullptr;
     quick_memblock_ = nullptr;
@@ -582,14 +662,30 @@ void DkVideoRenderer::update_transform(AVFrame* frame) {
                               : 0.0f;
     // Off / Low / Medium / High. Strength scales the unsharp mask; overshoot
     // is how far past the local min/max an edge may ring before it clamps.
+    // With FSR 1 the sharpening belongs to RCAS, so the built-in unsharp mask
+    // is disabled (double sharpening would ring and violates AMD's guidance).
     static constexpr float kSharpStrength[4] = {0.0f, 0.60f, 1.20f, 2.0f};
     static constexpr float kSharpOvershoot[4] = {0.0f, 0.02f, 0.035f, 0.05f};
-    t.sharp_data[0] = kSharpStrength[quick_state_.sharpness];
+    // Quick-menu sharpness -> RCAS sharpness in stops (0 = maximum sharpening,
+    // 2 = quarter strength). Level 0 keeps only a mild sharpen because FSR is
+    // expected to stay enabled even at 1:1, where RCAS is what improves the
+    // picture at low bitrates.
+    static constexpr float kFsrStops[4] = {2.0f, 1.0f, 0.5f, 0.2f};
+    const bool fsr_on = upscaler_ != 0;
+    t.sharp_data[0] = fsr_on ? 0.0f : kSharpStrength[quick_state_.sharpness];
     t.sharp_data[1] = kSharpOvershoot[quick_state_.sharpness];
     t.picture_data[0] = static_cast<float>(quick_state_.brightness) / 100.0f;
     t.picture_data[1] = static_cast<float>(quick_state_.contrast) / 100.0f;
     t.picture_data[2] = static_cast<float>(quick_state_.saturation) / 100.0f;
     t.picture_data[3] = static_cast<float>(quick_state_.gamma) / 100.0f;
+    t.fsr_data[0] = static_cast<float>(frame_w_);
+    t.fsr_data[1] = static_cast<float>(frame_h_);
+    t.fsr_data[2] = static_cast<float>(fb_width_);
+    t.fsr_data[3] = static_cast<float>(fb_height_);
+    t.fsr_sharp[0] = std::exp2(-kFsrStops[quick_state_.sharpness]);
+    t.fsr_sharp[1] = fsr_on ? 1.0f : 0.0f;
+    t.fsr_sharp[2] = 0.0f;
+    t.fsr_sharp[3] = 0.0f;
     std::memcpy(static_cast<uint8_t*>(data_cpu_) + kUniformTemplateOff, &t,
                 sizeof(t));
     logf("deko3d: color=%d full=%d cropY=%.4fx%.4f cropUV=%.4fx%.4f picture=%+d/%d/%d gamma=%.2f sharp=%d",
@@ -1013,34 +1109,43 @@ void DkVideoRenderer::update_hud(AVFrame* frame) {
     } else {
         std::snprintf(bitrate, sizeof(bitrate), "%.1f Mbps", mbps);
     }
+    // FSR tag: "[FSR]" when EASU upscales, "[FSR-S]" when only RCAS runs.
+    char fsr_tag[16] = "";
+    if (upscaler_ != 0 && frame->width > 0) {
+        std::snprintf(fsr_tag, sizeof(fsr_tag), " [FSR%s]",
+                      fb_width_ > static_cast<uint32_t>(frame->width) ? ""
+                                                                    : "-S");
+    }
     if (net_valid_.load(std::memory_order_relaxed)) {
         if (quick_state_.ping) {
             std::snprintf(buf, sizeof(buf),
-                          "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%dx%d  %s%s%s\nsrc %.0f  out %.0f  gen %.0f fps\n"
                           "%s  loss %.1f%%%s\nbuf %dms  ping %dms",
-                          frame->width, frame->height, codec, proto_tag,
+                          frame->width, frame->height, codec, proto_tag, fsr_tag,
                           fps_, output_fps_, generated_fps_, bitrate,
                           net_loss_.load(std::memory_order_relaxed), loss_tag,
                           net_buffer_ms_.load(std::memory_order_relaxed),
                           ping_ms_);
         } else {
             std::snprintf(buf, sizeof(buf),
-                          "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps\n"
+                          "%dx%d  %s%s%s\nsrc %.0f  out %.0f  gen %.0f fps\n"
                           "%s  loss %.1f%%%s\nbuf %dms",
-                          frame->width, frame->height, codec, proto_tag,
+                          frame->width, frame->height, codec, proto_tag, fsr_tag,
                           fps_, output_fps_, generated_fps_, bitrate,
                           net_loss_.load(std::memory_order_relaxed), loss_tag,
                           net_buffer_ms_.load(std::memory_order_relaxed));
         }
     } else if (quick_state_.ping) {
         std::snprintf(buf, sizeof(buf),
-                      "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
+                      "%dx%d  %s%s%s\nsrc %.0f  out %.0f  gen %.0f fps\nping %dms",
                       frame->width, frame->height, codec, proto_tag,
+                      fsr_tag,
                       fps_, output_fps_, generated_fps_, ping_ms_);
     } else {
         std::snprintf(buf, sizeof(buf),
-                      "%dx%d  %s%s\nsrc %.0f  out %.0f  gen %.0f fps",
+                      "%dx%d  %s%s%s\nsrc %.0f  out %.0f  gen %.0f fps",
                       frame->width, frame->height, codec, proto_tag,
+                      fsr_tag,
                       fps_, output_fps_, generated_fps_);
     }
     if (hud_text_cache_ == buf) return;  // unchanged -> keep the current texture
@@ -1097,6 +1202,23 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
 
     ensure_layouts(frame, map->is_linear);
     update_transform(frame);
+
+    // FSR 1 decision. EASU only runs when the frame is genuinely smaller than
+    // the output (1x..4x area, the range the algorithm supports); the same
+    // setting still runs RCAS at 1:1, which is what recovers detail from a soft
+    // low-bitrate stream in handheld mode.
+    const bool fsr_pass = upscaler_ != 0 && ensure_fsr_target();
+    const bool fsr_upscale =
+        fsr_pass && static_cast<uint32_t>(frame_w_) < fb_width_ &&
+        static_cast<uint32_t>(frame_h_) < fb_height_ &&
+        static_cast<uint64_t>(fb_width_) * fb_height_ <=
+            4ull * static_cast<uint64_t>(frame_w_) * frame_h_;
+    if (fsr_upscale != fsr_upscale_logged_) {
+        fsr_upscale_logged_ = fsr_upscale;
+        logf("deko3d: FSR1 %dx%d -> %ux%u (%s)", frame_w_, frame_h_, fb_width_,
+             fb_height_, fsr_upscale ? "EASU+RCAS" : "RCAS only");
+    }
+
     FrameMapping* fm = map_frame(frame, base, handle, size);
     if (!fm) return false;
     // Reaching this point proves that this imported mapping is valid as the
@@ -1216,9 +1338,16 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
                      &next->luma_desc, sizeof(DkImageDescriptor));
     cmdbuf_.pushData(data_gpu_ + image_off + 5 * sizeof(DkImageDescriptor),
                      &next->chroma_desc, sizeof(DkImageDescriptor));
+    // Image descriptor #7 = the FSR intermediate target sampled by RCAS.
+    if (fsr_pass) {
+        cmdbuf_.pushData(data_gpu_ + image_off + 7 * sizeof(DkImageDescriptor),
+                         &fsr_desc_, sizeof(DkImageDescriptor));
+    }
 
     dk::ImageView view{framebuffers_[slot]};
-    cmdbuf_.bindRenderTargets({&view});
+    dk::ImageView fsr_view{fsr_pass ? fsr_image_ : framebuffers_[slot]};
+    dk::ImageView* video_target = fsr_pass ? &fsr_view : &view;
+    cmdbuf_.bindRenderTargets({video_target});
     cmdbuf_.setViewports(0, {{0.0f, 0.0f, (float)fb_width_, (float)fb_height_,
                               0.0f, 1.0f}});
     cmdbuf_.setScissors(0, {{0, 0, fb_width_, fb_height_}});
@@ -1233,14 +1362,15 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     depth_stencil.setDepthWriteEnable(false);
 
     cmdbuf_.bindShaders(DkStageFlag_GraphicsMask,
-                        {&vertex_shader_, &fragment_shader_});
+                        {&vertex_shader_,
+                         fsr_upscale ? &fsr_fsh_ : &fragment_shader_});
     cmdbuf_.bindRasterizerState(rasterizer);
     cmdbuf_.bindColorState(color);
     cmdbuf_.bindColorWriteState(color_write);
     cmdbuf_.bindDepthStencilState(depth_stencil);
 
     cmdbuf_.bindSamplerDescriptorSet(data_gpu_ + kSamplerOff, 1);
-    cmdbuf_.bindImageDescriptorSet(data_gpu_ + image_off, 7);
+    cmdbuf_.bindImageDescriptorSet(data_gpu_ + image_off, fsr_pass ? 8 : 7);
     cmdbuf_.barrier(DkBarrier_None,
                     DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
 
@@ -1258,6 +1388,24 @@ bool DkVideoRenderer::render(AVFrame* frame, AVFrame* motion_frame,
     cmdbuf_.bindVtxBuffer(0, data_gpu_ + kVtxOff, sizeof(kQuad));
 
     cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
+
+    // --- FSR 1 second pass: RCAS sharpening from the intermediate target into
+    // the real framebuffer. DkBarrier_Primitives plus an image-cache
+    // invalidation makes the render-target writes visible to the texture reads
+    // that follow in the same command list.
+    if (fsr_pass) {
+        cmdbuf_.barrier(DkBarrier_Primitives, DkInvalidateFlags_Image);
+        cmdbuf_.bindRenderTargets({&view});
+        cmdbuf_.setViewports(0, {{0.0f, 0.0f, (float)fb_width_,
+                                  (float)fb_height_, 0.0f, 1.0f}});
+        cmdbuf_.setScissors(0, {{0, 0, fb_width_, fb_height_}});
+        cmdbuf_.clearColor(0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 1.0f);
+        cmdbuf_.bindShaders(DkStageFlag_GraphicsMask,
+                            {&vertex_shader_, &rcas_fsh_});
+        cmdbuf_.bindTextures(DkStage_Fragment, 0, {dkMakeTextureHandle(7, 0)});
+        cmdbuf_.bindVtxBuffer(0, data_gpu_ + kVtxOff, sizeof(kQuad));
+        cmdbuf_.draw(DkPrimitive_Quads, 4, 1, 0, 0);
+    }
 
     // --- Alpha-blended overlays: optional debug HUD, quick menu, cursor.
     dk::BlendState overlay_blend;

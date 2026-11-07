@@ -20,6 +20,12 @@ enum class CodecPreference { Auto, H265, H264 };
 // NativeUdp forces proto: 2, and WebRtc forces proto: 1 (libpeer WebRTC).
 enum class TransportPreference { Auto = 0, NativeUdp = 1, WebRtc = 2 };
 
+// Settings -> Advanced -> Upscaler. FSR 1 runs AMD FidelityFX Super Resolution
+// 1 on the decoded frame: EASU when the stream is smaller than the display and
+// always the RCAS sharpening pass, so a low-bitrate stream stays usable even in
+// handheld mode (720p panel) where the frame is presented 1:1.
+enum class UpscalerPreference { Off = 0, Fsr1 = 1 };
+
 inline const char* video_codec_label(VideoCodec codec) {
     return codec == VideoCodec::H265 ? "H.265" : "H.264";
 }

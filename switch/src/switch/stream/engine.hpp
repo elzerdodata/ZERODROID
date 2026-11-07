@@ -66,7 +66,8 @@ public:
     void set_quick_menu_state(const QuickMenuState& state) {
         dkVideo_.set_quick_menu_state(state);
     }
-    // 0 = auto, 1 = 720p, 2 = 720HQ, 3 = 1080p, 4 = 1080HQ.
+    // 0 = auto, 1 = 720p, 2 = 720HQ, 3 = 1080p, 4 = 1080HQ,
+    // 5 = 540p (FSR source), 6 = 480p (FSR source, handheld only).
     void set_stream_resolution(int mode);
     // Settings -> Advanced. Auto tries H.265 first and falls back to H.264.
     void set_codec_preference(CodecPreference preference);
@@ -74,6 +75,9 @@ public:
     void set_fps_mode(int mode);
     // Settings -> Advanced. Auto prefers Native UDP (proto: 2).
     void set_transport_preference(TransportPreference preference);
+    // Settings -> Advanced. FSR 1 upscales the received frame (and sharpens it
+    // at 1:1) to keep low-bitrate sessions sharp.
+    void set_upscaler_preference(UpscalerPreference preference);
     TransportPreference transport_preference() const {
         return transportPreference_;
     }
@@ -174,6 +178,7 @@ private:
     int streamResolution_{0};
     CodecPreference codecPreference_{CodecPreference::Auto};
     TransportPreference transportPreference_{TransportPreference::Auto};
+    UpscalerPreference upscalerPreference_{UpscalerPreference::Fsr1};
     std::atomic<VideoCodec> activeCodec_{VideoCodec::H265};
     std::atomic<int> activeTransport_{0};  // 0 = none, 1 = Native UDP, 2 = WebRTC
     int fpsMode_{0};  // 0 = auto, 1 = 30, 2 = 60

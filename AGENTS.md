@@ -68,13 +68,32 @@ script with `--container`, which builds in-place without nested Docker.
   updating all four places at once.
 - Settings -> Advanced selects the codec (`CodecPreference`: Auto / H.265 /
   H.264, persisted as `codec` in `settings.json`), the FPS limit (`fps`,
-  sent as `framerate_max` in the `getstatus` reply) and the network protocol
+  sent as `framerate_max` in the `getstatus` reply), the network protocol
   (`TransportPreference`: Auto / Native UDP / WebRTC, sent as `proto` 2 or 1
-  in the `getstatus` reply). Auto codec falls back to H.264 when `video_.init()`
-  fails, and the worker retries the session once with H.264 when an H.265
-  session produces no frame. `Engine::worker()` runs `run_session()` in a loop
-  for that; the decoder reopen is handed to the decode thread through
-  `pendingCodec_` because only that thread owns `VideoDecoder` while streaming.
+  in the `getstatus` reply) and the upscaler (`UpscalerPreference`: Off / FSR 1,
+  persisted as `upscaler`).
+- Auto codec falls back to H.264 when `video_.init()` fails, and the worker
+  retries the session once with H.264 when an H.265 session produces no frame.
+  `Engine::worker()` runs `run_session()` in a loop for that; the decoder reopen
+  is handed to the decode thread through `pendingCodec_` because only that
+  thread owns `VideoDecoder` while streaming.
+- The upscaler runs AMD FidelityFX FSR 1 in `DkVideoRenderer::render()`:
+  `video_fsr_fsh.glsl` (EASU on the luma plane, 12 texel fetches clamped to the
+  visible NVDEC area) renders into an RGBA8 intermediate target, then
+  `fsr_rcas_fsh.glsl` sharpens into the framebuffer. EASU only runs when the
+  frame is smaller than the output (1x-4x area); at 1:1 and when downscaling,
+  pass 1 uses `video_fsh.glsl` and only RCAS runs. Keep the built-in unsharp
+  mask disabled while FSR is on (`sharp_data.x = 0`). The intermediate target is
+  rebuilt with the swapchain, and the HUD tags the active path `[FSR]` or
+  `[FSR-S]`.
+- Streaming resolution is requested in the gateway `x`/`y` parameters and
+  `bitrate_max`: 720p = 15 Mbps, 720HQ = 20 Mbps, 1080p = 25 Mbps,
+  1080HQ = 30 Mbps, 540p = 10 Mbps and 480p = 7 Mbps; Auto follows dock mode.
+  540p/480p are FSR sources for low-bandwidth WiFi: fewer pixels at a much
+  lower bitrate, upscaled back to the panel. Docked, 480p promotes to 540p so
+  the upscale stays inside FSR's 4x area limit. With FSR 1 enabled every
+  ceiling is trimmed by 10% (`stream_bitrate`), trading a little detail for
+  more WiFi headroom; it is applied in the `getstatus` reply and in the HUD cap.
 - The performance overlay (`QuickPerformance`) shows resolution, codec,
   active transport tag (`[NAT-UDP]` / `[WebRTC]`), measured/target Mbps and
   matching loss metrics (`(FEC)` / `(NACK)`); `Engine::update_net_stats()`
